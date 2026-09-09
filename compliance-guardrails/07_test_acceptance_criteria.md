@@ -63,6 +63,8 @@ Tests each control domain and the engine/exception mechanics. Each row implies: 
 | LC-06 | Medication/IP/emergency competency missing | BLOCK / validate per rule (CBA-MED-001, CBA-IP-001, CBA-EM-001). |
 
 ## G. Minimum staffing / skill mix / safety
+
+> **Scenario note:** The unit labels in G (ICU, Medical Ward, ED, NICU) are **illustrative by unit-type**, matching the original requirements examples — they are **not** location-registry `unit_code`s. In acceptance tests each scenario is bound to a real registry unit and its code (e.g., ICU Main = `INTE`); `NICU` does not exist in the current registry and is used here only as a generic high-acuity example.
 | ID | Scenario | Expected |
 |---|---|---|
 | ST-01 | ICU required 12 / scheduled 12 | 🟢 COMPLIANT (CBA-STAFF-001). |

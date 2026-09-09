@@ -26,7 +26,8 @@ Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, over
 
 ### Minimal evaluate body (SHIFT)
 ```json
-{ "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "ICU",
+{ "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "INTE",
+    "unit_name": "Intensive Care Unit (ICU) Main",
     "shift_type": "NIGHT", "shift_date": "2026-09-10", "start": "23:00", "end": "07:00" } }
 ```
 ### Response shape (verdict)
@@ -55,10 +56,12 @@ Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, over
 | Code | Meaning | Example |
 |---|---|---|
 | `staff_id` | Staff Nurse Master id | `NUR-000125` |
-| `unit_code` | Location-registry unit code | `ICU`, `WARD3A`, `EDRE` |
+| `unit_code` | **Location-registry** unit code (single source of truth) | `INTE`, `WARD`, `EDRE` |
 | `shift_type` | `MORNING/EVENING/NIGHT/EXTENDED/ONCALL` | |
 | `leave_type` | `ANNUAL/SICK/MATERNITY/EMERGENCY/UNPAID/…` | |
 | `eval_target_type` | `SHIFT/ROSTER/OT/LEAVE/DEPLOYMENT/ASSIGNMENT/PUNCH` | |
+
+> **Unit codes are NOT invented here.** `unit_code` must be a code from the **location registry** (`implementation-plan/artifacts/normalized_department_unit.csv`), which is the single source of truth. Example mappings used across these contracts: `INTE` = Intensive Care Unit (ICU) Main, `WARD` = Ward 3A - General Acute, `EDRE` = ED Resuscitation Area. Registry codes are placeholders finalized in Wave P0 — but payloads always carry a registry-issued code, never a display alias.
 
 ## 7. Behavioural requirements
 - **Do not mutate on evaluate** — `evaluate` is read-only; publish/approve only after ALLOW (or approved exception).
