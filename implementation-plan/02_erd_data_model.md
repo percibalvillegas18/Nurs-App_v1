@@ -73,7 +73,7 @@ erDiagram
 | name | varchar | `ACUTE GENERAL CARE`, `SPECIALIZED & DIAGNOSTIC`, `SUPPORT & ADMINISTRATIVE`; the 3 top service lines act as their own group |
 | care_setting | enum | INPATIENT_WARD / AMBULATORY_DIAGNOSTIC / BEDDED_SERVICE_LINE / NON_BEDDED_SUPPORT |
 
-**nursing_unit** *(the 38 bedded + 5 support areas, CSV column 2)*
+**nursing_unit** *(the 43 care areas, CSV column 2; operational target 36 bedded + 7 non-bedded after reclassifying the 2 Admin & Support rows — see `06` DQ-9)*
 | Attribute | Type | Notes |
 |---|---|---|
 | unit_id | PK | |
@@ -83,7 +83,7 @@ erDiagram
 | unit_name | varchar | clean display name (prefixes stripped) |
 | unit_type | enum | WARD / ICU / ED / OR / PACU / CLINIC / DIAGNOSTIC / SUPPORT / OTHER |
 | care_setting | enum | mirrors unit_group |
-| **licensed_capacity** | int | = CSV "Bed" (nil for the 5 support rows) |
+| **licensed_capacity** | int | = CSV "Bed" for bedded rows (nil for the 7 non-bedded rows) |
 | is_bedded | boolean | false for support/admin areas |
 
 **room**, **bed**

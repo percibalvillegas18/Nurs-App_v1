@@ -5,7 +5,7 @@ Use as the build/QA checklist alongside `01_implementation_plan.md`. Items are g
 ## A. Source reconciliation & master taxonomy (Wave P0)
 - [ ] Archive original source files with immutable load IDs (`Department & Bed.csv`, `Hospital_Nursing_Organizational_Structure.md`).
 - [ ] Confirm department vocabulary (4): Emergency & Acute Care · Surgical & Perioperative · Critical Care & Intensive · General & Specialty.
-- [ ] Confirm unit count & totals: **43 units (38 bedded + 5 support/admin), 524 licensed beds**, against `artifacts/org_rollup.csv`.
+- [ ] Confirm unit count & totals: **43 units (36 bedded + 7 non-bedded), 515 assignable beds** (raw source total 524 incl. 2 Admin & Support rows reclassified — see `06` DQ-9), against `artifacts/org_rollup.csv`.
 - [ ] Adjudicate CSV anomalies from `06_source_reconciliation.md`:
   - `ICU Extension` (Critical Care, 14) vs `ICU Extension (2nd Location)` (General & Specialty, 14) — duplicate? two sites? split licensing?
   - `Plaster Unit` (Surgical, 9) vs `Plaster Unit (2nd Location)` (Gen & Spec, 9).
@@ -16,7 +16,7 @@ Use as the build/QA checklist alongside `01_implementation_plan.md`. Items are g
 - [ ] **Bed granularity decision:** Capacity-mode vs Bed-registry-mode; if registry mode, record room-bay sizing and confirm with **physical count audit** before go-live.
 
 ## B. Org Directory & Location registry (Wave P1)
-- [ ] Load facility, departments, unit_groups, nursing_units from `normalized_department_unit.csv` via loader; reconcile 524/43/4 counts to zero-delta.
+- [ ] Load facility, departments, unit_groups, nursing_units from `normalized_department_unit.csv` via loader; reconcile 515 assignable beds / 43 units / 4 departments to zero-delta (record the 524→515 DQ-9 delta separately).
 - [ ] Unit codes unique & stable; load mapping unit↔department↔group↔care-setting.
 - [ ] Load workforce positions + org nodes from org chart; wire reports-to (org_node parent).
 - [ ] Configure controlled vocabularies (unit_type, care_setting, bed_class, bed_status) with no free-text drift.

@@ -16,10 +16,10 @@ Implementation-ready deliverables for ingesting the organizational chart, depart
 | File | Contents |
 |---|---|
 | `artifacts/normalized_department_unit.csv` | Cleaned 43-unit load source (canonical registry seed) |
-| `artifacts/org_rollup.csv` | Facility/department/unit-group capacity rollups (524 beds, 4 depts, 43 units) |
+| `artifacts/org_rollup.csv` | Facility/department/unit-group capacity rollups (515 assignable beds, 4 depts, 43 units; source 524) |
 | `artifacts/ddl_schema.sql` | PostgreSQL DDL for all domains |
 
-## Key figures (from source)
-- **4 departments · 43 locations (38 bedded + 5 support/admin) · 524 licensed beds**.
-- Dept beds: Emergency **113** · Surgical **31** · Critical/ICU **99** · General & Specialty **281**.
+## Key figures
+- **4 departments · 43 locations · 515 assignable beds** (36 bedded + 7 non-bedded). Raw source total is **524**; the 9-bed delta = 2 Admin & Support rows (`EDAD`, `ORAD`) reclassified non-bedded (see `06` DQ-9).
+- Assignable dept beds: Emergency **106** · Surgical **29** · Critical/ICU **99** · General & Specialty **281** (source: 113 / 31 / 99 / 281).
 - Start at **Wave P0**: execute `06_source_reconciliation.md`, obtain sign-offs, then provision Org Directory + Bed registry per `03_configuration_checklist.md`.

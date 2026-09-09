@@ -6,8 +6,9 @@ Companion to the implementation plan. Two sections: **import/validation test cas
 
 | ID | Scenario / input | Expected result |
 |---|---|---|
-| TC-01 | Load full `Department & Bed.csv` | 43 units staged; **4 departments**; totals match: 524 beds, 38 bedded + 5 support rows. Zero unexplained delta. |
-| TC-02 | Emergency dept rows (39,32,32,3,7) | Department total 113; 5 units; correct care_setting `BEDDED_SERVICE_LINE`. |
+| TC-01 | Load full `Department & Bed.csv` (raw import) | 43 units staged; **4 departments**; raw totals match source: 524 bed values, 38 rows with a Bed + 5 blank-bed rows. Zero unexplained delta at staging. |
+| TC-01a | Adjudicate to operational target | After reclassifying `EDAD` (7) & `ORAD` (2) Admin & Support rows → **515 assignable beds, 36 bedded + 7 non-bedded**; 9-bed delta logged as DQ-9. |
+| TC-02 | Emergency dept rows (39,32,32,3,7) | Raw subtotal 113 (5 bed-value rows); operational 106 after `EDAD` reclassified non-bedded (4 bedded + 1 non-bedded). |
 | TC-03 | `ICU Extension` (Critical, 14) vs `ICU Extension (2nd Location)` (Gen & Spec, 14) | Flagged as **near-duplicate** for human adjudication; both load under distinct departments pending decision. |
 | TC-04 | `Plaster Unit` (Surgical) vs `Plaster Unit (2nd Location)` (Gen & Spec) | Same duplicate-detection rule; routed to adjudication. |
 | TC-05 | `ED Navigation` vs `ED Navigator (2nd Location)` naming | Spelling-difference rule flags pair; no silent merge. |

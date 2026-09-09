@@ -54,7 +54,7 @@ Full ERD in `02_erd_data_model.md`. Summary here. Three domains:
 - **facility** — the hospital (top node of physical tree). `facility_id PK`, name, region, mrn_prefix, licensor, status.
 - **department** — the 4 service departments in the CSV (*Emergency & Acute Care, Surgical & Perioperative, Critical Care & Intensive, General & Specialty*). `department_id PK`, `department_code UK`, facility FK, name, `department_type` (BEDDED / NON_BEDDED).
 - **unit_group** (a.k.a. *service line / care setting* node) — the parenthetical prefixes in the CSV (`ACUTE GENERAL CARE`, `SPECIALIZED & DIAGNOSTIC`, `SUPPORT & ADMINISTRATIVE`) and, at the top three service lines, the department itself acts as the group. `unit_group_id PK`, department FK, name, `care_setting` (INPATIENT_WARD / AMBULATORY_DIAGNOSTIC / BEDDED_SERVICE_LINE / NON_BEDDED_SUPPORT).
-- **nursing_unit** (a.k.a. ward / care area) — the 38 bedded + 5 support areas in the CSV. `unit_id PK`, `unit_code UK`, department FK, unit_group FK, `unit_name`, `care_setting`, `unit_type` (Ward/ICU/ED/OR/PACU/Clinic/Support…), **`licensed_capacity`** (the CSV "Bed"), `is_bedded` flag.
+- **nursing_unit** (a.k.a. ward / care area) — the 43 care areas in the CSV. `unit_id PK`, `unit_code UK`, department FK, unit_group FK, `unit_name`, `care_setting`, `unit_type` (Ward/ICU/ED/OR/PACU/Clinic/Support…), **`licensed_capacity`** (the CSV "Bed"), `is_bedded` flag. **Assignable-bed target:** the CSV's 38 bed-count rows include 2 Admin & Support areas (`EDAD`, `ORAD`) reclassified to non-bedded → **36 bedded + 7 non-bedded** (see `06` DQ-9).
 - **room** — grouping level inside a unit. `room_id PK`, unit FK, room_number, room_type (private/shared/bay), isolation capability.
 - **bed** — physical assignable resource. `bed_id PK`, unit FK, room FK, bed_number, bed_class, care_features (telemetry/vent/neg-pressure), `is_licensed`, `is_operative`, lifecycle `bed_status`.
 
@@ -89,8 +89,8 @@ Full ERD in `02_erd_data_model.md`. Summary here. Three domains:
 | Nursing Operations clinical areas | unit_group / department | admit location mapping | owning department | demand driver | cost center | staffing demand source |
 | Nursing Admin / Workforce Mgmt | org_node | — | — | scheduling config | HR functions | modules (recruitment→analytics) |
 | **Department** (4) | department | admission dept | owning dept | unit → dept grouping | cost center | unit taxonomy |
-| **Unit / Ward** (38+5) | nursing_unit | ADT assign unit | bed pool owner | staffing schedule unit | pay location | roster unit |
-| **Bed capacity (524)** | unit `licensed_capacity` | availability source | bed registry (room/bed) | capacity for staffing ratios | — | census input to staffing |
+| **Unit / Ward** (43: 36 bedded + 7 non-bedded) | nursing_unit | ADT assign unit | bed pool owner | staffing schedule unit | pay location | roster unit |
+| **Bed capacity** (515 assignable; 524 raw source) | unit `licensed_capacity` | availability source | bed registry (room/bed) | capacity for staffing ratios | — | census input to staffing |
 | Nursing Manager / Charge / Team / Staff | workforce_position + assignment | scope approvals | bed release authority | shift roles | pay grade | roles/groups |
 
 **Integration principle:** One **location master** (Org Directory) publishes unit codes that **ADT, Bed Mgmt, Scheduling, Payroll, and HNWMS all consume** — never re-keyed. Census flows EMR→Bed Mgmt→(staffing demand)→HNWMS.
@@ -188,7 +188,7 @@ Each step writes an audit entry and, where integration is live, emits the HL7 AD
 - Duplicate/near-duplicate names (e.g., "ICU Extension" vs "ICU Extension (2nd Location)") flagged for manual adjudication.
 
 ### 5.5 Reconciliation
-- **Migration-time:** count & total checks vs source (524 beds; 4 depts; 38 bedded + 5 support units; 43 units). Compare staged vs loaded vs source — report exact deltas.
+- **Migration-time:** count & total checks vs source (raw 524 beds; 4 depts; 38 bed-count rows + 5 blank-bed support rows; 43 units) and vs **operational target** (515 assignable; 36 bedded + 7 non-bedded). The 9-bed delta is the `06` DQ-9 adjudication (EDAD 7 + ORAD 2). Compare staged vs loaded vs source and report exact deltas with the adjudication delta separately documented.
 - **Operating-time:** daily *census vs bed-registry occupancy*; weekly *capacity config vs licensing submission*; monthly *full audit vs source of truth*. Every run produces a signed reconciliation report (see P0/P5).
 - **Physical count audit** at Wave P2 to validate the auto-provisioned room/bed numbering assumption.
 
