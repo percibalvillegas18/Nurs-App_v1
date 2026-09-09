@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
+import threading
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,6 +18,10 @@ PBKDF2_ROUNDS = 120_000
 MAX_UPLOAD = 8 * 1024 * 1024
 ALLOWED_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"}
 ADMIN_ROLES = {"SYS_ADMIN", "ORG_ADMIN", "HR", "DON", "ADON", "WORKFORCE_MGR"}
+LOGIN_RATE_WINDOW = 60  # seconds
+LOGIN_RATE_MAX = 10     # max attempts per window per IP
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_login_lock = threading.Lock()
 
 DOC_TYPES = [
     ("NATIONAL_ID", "National ID / Iqama", "MANDATORY", "Copy of national ID or Iqama"),
@@ -129,7 +135,30 @@ def clear_cookie(secure: bool = False) -> str:
     return "; ".join(parts)
 
 
-def login(conn, username: str, password: str) -> dict:
+def cleanup_sessions(conn):
+    """Delete expired sessions."""
+    conn.execute("DELETE FROM app_session WHERE expires_at < ?", (now_iso(),))
+    conn.commit()
+
+
+def check_rate_limit(client_ip: str) -> bool:
+    """Return True if the client is within the login rate limit."""
+    import time
+    now = time.time()
+    with _login_lock:
+        attempts = _login_attempts[client_ip]
+        # Prune old entries
+        _login_attempts[client_ip] = [t for t in attempts if now - t < LOGIN_RATE_WINDOW]
+        if len(_login_attempts[client_ip]) >= LOGIN_RATE_MAX:
+            return False
+        _login_attempts[client_ip].append(now)
+        return True
+
+
+def login(conn, username: str, password: str, client_ip: str = "unknown") -> dict:
+    if not check_rate_limit(client_ip):
+        return {"error": "Too many login attempts. Please wait a moment and try again."}
+    cleanup_sessions(conn)
     username = (username or "").strip()
     password = (password or "").strip()
     key = username.lower()

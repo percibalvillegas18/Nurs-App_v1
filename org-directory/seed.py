@@ -513,10 +513,10 @@ def main():
         "INSERT INTO doc_type (doc_code, label, category, notes) VALUES (?,?,?,?)", DOC_TYPES
     )
     used_names: set[str] = set()
-    salt, hashed = hash_password(DEMO_PASSWORD)
     people_rows = list(cur.execute("SELECT persona_id, persona_code, display_name FROM persona"))
     for pid, code, name in people_rows:
         uname = slug_username(name, code, used_names)
+        salt, hashed = hash_password(DEMO_PASSWORD)
         cur.execute(
             """INSERT INTO app_user (persona_id, username, password_salt, password_hash, status)
                VALUES (?,?,?,?, 'ACTIVE')""",

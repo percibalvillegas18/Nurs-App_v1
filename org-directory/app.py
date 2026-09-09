@@ -266,12 +266,70 @@ def run_scenarios():
     conn = db()
     eng = RbacEngine(conn)
     out = []
-    for subject, perm, rtype, rcode, label in SCENARIOS:
+    for subject, perm, rtype, rcode, label, expect_allow in SCENARIOS:
         res = eng.evaluate(subject, perm, rtype, rcode)
         res["label"] = label
+        res["expected"] = expect_allow
+        res["pass"] = res["allow"] == expect_allow
         out.append(res)
     conn.close()
     return out
+
+
+def log_decision(conn, res: dict):
+    """Persist an RBAC decision to the audit log."""
+    conn.execute(
+        """INSERT INTO rbac_decision_log (decided_at, subject, permission, resource_type, resource_code, allow, reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            res.get("subject", ""),
+            res.get("permission", ""),
+            (res.get("resource") or {}).get("type", ""),
+            (res.get("resource") or {}).get("code", ""),
+            1 if res.get("allow") else 0,
+            res.get("reason", ""),
+        ),
+    )
+
+
+def authorize(user: dict, permission: str, resource_type: str, resource_code: str) -> dict:
+    """Evaluate an RBAC check for the currently logged-in user."""
+    conn = db()
+    try:
+        eng = RbacEngine(conn)
+        res = eng.evaluate(user["persona_code"], permission, resource_type, resource_code)
+        log_decision(conn, res)
+        conn.commit()
+        return res
+    finally:
+        conn.close()
+
+
+def my_rbac(user: dict) -> dict:
+    """Return the current user's RBAC grants and held permissions."""
+    conn = db()
+    try:
+        eng = RbacEngine(conn)
+        grants = eng._grants(user["persona_code"])
+        held = sorted(eng._held_permissions(grants))
+        return {
+            "ok": True,
+            "persona_code": user["persona_code"],
+            "display_name": user.get("display_name", ""),
+            "grants": [
+                {
+                    "role": g["role_code"],
+                    "scope_type": g["scope_type"],
+                    "scope_code": g["scope_code"],
+                    "permissions": sorted(g["permissions"]),
+                }
+                for g in grants
+            ],
+            "held_permissions": held,
+        }
+    finally:
+        conn.close()
 
 
 def evaluate_request(payload: dict) -> dict:
@@ -439,7 +497,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "invalid json"}, 400)
             conn = db()
             try:
-                res = um.login(conn, payload.get("username", ""), payload.get("password", ""))
+                res = um.login(conn, payload.get("username", ""), payload.get("password", ""), client_ip=self.client_address[0])
                 if not res.get("ok"):
                     return self._json(res, 401)
                 return self._json(res, 200, extra=[("Set-Cookie", um.set_cookie(res["token"], secure=self._secure()))])
