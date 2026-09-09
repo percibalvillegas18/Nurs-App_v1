@@ -103,7 +103,7 @@ CREATE TABLE evaluation_run (
     triggered_by   VARCHAR(100),
     triggered_by_role VARCHAR(100),
     ran_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    overall_verdict VARCHAR(20),            -- ALLOW / WARN / BLOCK  (lowest severity that applies)
+    overall_verdict VARCHAR(20),            -- ALLOW / WARN / BLOCK  (strictest result that applies)
     outcome_notes  TEXT
 );
 

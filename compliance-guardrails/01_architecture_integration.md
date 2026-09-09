@@ -88,7 +88,7 @@ The engine is invoked **pre-write** (block before the bad transaction persists) 
 | Roster read / analytics | M9 | READ/AGG | compliance KPIs, staffing gaps, dashboard |
 | Payroll export | M6/Payroll | PRE-EXPORT | only approved, compliant OT/hours exported |
 
-Each evaluation produces an **auditable evaluation_run + per-rule result** and an **ALLOW / WARN / BLOCK** verdict (lowest-severity that applies).
+Each evaluation produces an **auditable evaluation_run + per-rule result** and an **ALLOW / WARN / BLOCK** verdict (**strictest** result that applies: any BLOCK → BLOCK; else any WARN → WARN; else ALLOW/INFORM).
 
 ---
 
@@ -147,4 +147,4 @@ Full entity spec + Mermaid ERD in `02_rules_data_model.md`; runnable DDL in `art
 
 Full rule catalogue (55 rules) with codes is in `03_compliance_rule_catalog.md` and `artifacts/compliance_rule_catalog.csv`.
 
-**Authoritative note:** Default thresholds in this package reflect the values stated in the spec (e.g. 8h/48h standard, 6h/36h Ramadan, ≥21 days leave rising to ≥30 after 5 yrs, OT at hourly wage + 50%). As a senior-implementation control, **every default parameter must be confirmed against the current Saudi Labor Law and the hospital's approved policies and CBAHI edition before go-live** — parameters are intentionally editable in `compliance_rule_parameter`.
+**Authoritative note:** Default thresholds reflect Saudi Labor Law **article-backed** values: Art. 98 8h/48h (Ramadan 6h/36h for Muslim workers), Art. 100 **shift-system 3-week averaging** (12h nursing rosters), Art. 101 intra-shift rest / presence, Art. 104 Friday rest, Art. 107 OT = hourly + 50%, Art. 109 leave ≥21 days rising to ≥30 after 5 yrs. **LAB-WH-001 must not hard-block a 12h shift on an Art. 100 unit.** The previous ≥11h rest-between-shifts default was EU law and has been moved to HOS-POL-001 as optional hospital policy. **Every parameter and `legal_reference` must still be confirmed** against the current Labor Law text, HRSD guidance, and CBAHI edition before go-live.

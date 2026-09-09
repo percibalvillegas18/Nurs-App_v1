@@ -2,6 +2,8 @@
 
 **Status:** Proposed defaults, **awaiting facility sign-off** (DON + Licensing). Applies to the raw-source items from `06_source_reconciliation.md`. Do not treat the "proposed disposition" as loaded until confirmed.
 
+**Seed taxonomy already applied (DQ-10/12) without merging rows:** `ICU-EXT-2` is `CRITICAL_CARE` / `INPATIENT_LICENSED` (no longer ambulatory); `PLASTER-2` is `PROCEDURE_ROOM`; `ED-NAV` / `ED-NAV-2` are `SUPPORT` / non-bedded; UCC re-parented to Emergency as `ED_STRETCHER`; Jail is `SECURE_WARD` / `INPATIENT_LICENSED`. Merge vs keep is still this document.
+
 ---
 
 ## 1. Why these can't be auto-resolved (honest scope)
@@ -34,15 +36,15 @@ For each, the deciding question is a physical one: **is there a real, separately
 ### DQ-1a — ICU Extension (2nd Location)
 | Decision | When to choose | Consequence |
 |---|---|---|
-| **MERGE as duplicate (default)** | No separate ICU-extension site/license exists; the 14 is a repeat of the Critical Care ICU Extension | Remove `ICUE_2` from registry; **no bed-count change** (14 already counted once under Critical Care); Gen&Spec drops by one unit row (→42 units), Surgical/Critical unchanged. |
-| **KEEP as second site, re-parent** | A second physical ICU-extension location exists with 14 assignable beds | Move `ICUE_2` under **Critical Care & Intensive** (not Gen&Spec/Diagnostic); group/care_setting corrected; unit count unchanged (43). |
-| **KEEP but reclassify non-bedded** | The "ICU Extension (2nd Location)" is actually a monitoring/office space, not beds | Set `ICUE_2` non-bedded; Gen&Spec assignable drops 14 → affects dept total; reassess. |
+| **MERGE as duplicate (default)** | No separate ICU-extension site/license exists; the 14 is a repeat of the Critical Care ICU Extension | Remove `ICU-EXT-2` from registry; **no bed-count change** (14 already counted once under Critical Care); Gen&Spec drops by one unit row (→42 units), Surgical/Critical unchanged. |
+| **KEEP as second site, re-parent** | A second physical ICU-extension location exists with 14 assignable beds | Move `ICU-EXT-2` under **Critical Care & Intensive** (not Gen&Spec/Diagnostic); group/care_setting corrected; unit count unchanged (43). |
+| **KEEP but reclassify non-bedded** | The "ICU Extension (2nd Location)" is actually a monitoring/office space, not beds | Set `ICU-EXT-2` non-bedded; Gen&Spec assignable drops 14 → affects dept total; reassess. |
 
 ### DQ-1b — Plaster Unit (2nd Location)
 | Decision | When to choose | Consequence |
 |---|---|---|
-| **MERGE as duplicate (default)** | No separate plaster-suite site/license | Remove `PLAS_2`; **no bed-count change** (9 already under Surgical). |
-| **KEEP as second site, re-parent** | Real second plaster location | Re-parent `PLAS_2` under **Surgical & Perioperative**, correct group. |
+| **MERGE as duplicate (default)** | No separate plaster-suite site/license | Remove `PLASTER-2`; **no bed-count change** (9 already under Surgical). |
+| **KEEP as second site, re-parent** | Real second plaster location | Re-parent `PLASTER-2` under **Surgical & Perioperative**, correct group. |
 | **Reclassify non-bedded** | It is an outpatient room, not 9 beds | Reassess Gen&Spec assignable. |
 
 ### DQ-2 — ED Navigation vs ED Navigator (2nd Location)

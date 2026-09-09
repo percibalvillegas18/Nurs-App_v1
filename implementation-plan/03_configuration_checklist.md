@@ -5,26 +5,27 @@ Use as the build/QA checklist alongside `01_implementation_plan.md`. Items are g
 ## A. Source reconciliation & master taxonomy (Wave P0)
 - [ ] Archive original source files with immutable load IDs (`Department & Bed.csv`, `Hospital_Nursing_Organizational_Structure.md`).
 - [ ] Confirm department vocabulary (4): Emergency & Acute Care · Surgical & Perioperative · Critical Care & Intensive · General & Specialty.
-- [ ] Confirm unit count & totals: **43 units (36 bedded + 7 non-bedded), 515 assignable beds** (raw source total 524 incl. 2 Admin & Support rows reclassified — see `06` DQ-9), against `artifacts/org_rollup.csv`.
+- [ ] Confirm unit count & **classed** totals against `artifacts/org_rollup.csv`: **43 units**; raw 524; INPATIENT_LICENSED **281** (or **267** excl. DQ-1a); ED_STRETCHER **118**; mixed-class 515 is history only (`06` DQ-10). Do not sign 515 as licensed beds.
 - [ ] Adjudicate CSV anomalies from `06_source_reconciliation.md`:
-  - `ICU Extension` (Critical Care, 14) vs `ICU Extension (2nd Location)` (General & Specialty, 14) — duplicate? two sites? split licensing?
-  - `Plaster Unit` (Surgical, 9) vs `Plaster Unit (2nd Location)` (Gen & Spec, 9).
-  - `ED Navigation`(3) vs `ED Navigator (2nd Location)`(5) naming inconsistency.
+  - `ICU-EXT` (Critical Care, 14) vs `ICU-EXT-2` (Gen & Spec, 14) — duplicate? two sites? split licensing?
+  - `PLASTER` (Surgical, 9) vs `PLASTER-2` (Gen & Spec, 9).
+  - `ED-NAV`(3) vs `ED-NAV-2`(5) — both classed SUPPORT/non-bedded; confirm merge.
+  - Confirm DQ-12: Jail = secure inpatient; UCC re-parented to Emergency; OR/PACU/clinics not licensed beds.
   - Support/admin rows (5) have **no bed count** → confirm they are non-bedded locations, not missing data.
   - Embedded newline+tab inside the Endoscopy cell — confirm parsed correctly.
 - [ ] Map org-chart positions to `position_code` + `position_level` (L1–L7 / E1–E2) with a sign-off table.
 - [ ] **Bed granularity decision:** Capacity-mode vs Bed-registry-mode; if registry mode, record room-bay sizing and confirm with **physical count audit** before go-live.
 
 ## B. Org Directory & Location registry (Wave P1)
-- [ ] Load facility, departments, unit_groups, nursing_units from `normalized_department_unit.csv` via loader; reconcile 515 assignable beds / 43 units / 4 departments to zero-delta (record the 524→515 DQ-9 delta separately).
+- [ ] Load facility, departments, unit_groups, nursing_units from `normalized_department_unit.csv` via loader; reconcile **by capacity_class** (INPATIENT_LICENSED 281/267, ED 118, 43 units, 4 departments). Record 524 and 515 only as source-history deltas.
 - [ ] Unit codes unique & stable; load mapping unit↔department↔group↔care-setting.
 - [ ] Load workforce positions + org nodes from org chart; wire reports-to (org_node parent).
 - [ ] Configure controlled vocabularies (unit_type, care_setting, bed_class, bed_status) with no free-text drift.
 - [ ] Publish registry to consumers (ADT, Scheduling, HNWMS, Payroll cost-centers).
 
 ## C. Bed registry provisioning (Wave P2)
-- [ ] Provision room/bed records from `licensed_capacity` (Bed-registry mode) or store capacity only (Capacity mode).
-- [ ] Validate `bed` count == `licensed_capacity` per unit; flag any mismatch.
+- [ ] Provision room/bed records from `licensed_capacity` **only where `capacity_class=INPATIENT_LICENSED`** (optional separate ED-stretcher / PACU-bay pools). Do not provision ADT beds for OR/procedure/clinic/support.
+- [ ] Validate `bed` count == `licensed_capacity` per inpatient unit; flag any mismatch.
 - [ ] Set bed features/classes (ICU=telemetry/vent, isolation/neg-pressure units flagged).
 - [ ] Physical room/bed audit: reconcile synthetic numbering to actual signage and unit bed counts — use `artifacts/physical_bed_audit_form.md`. This also resolves DQ-1/DQ-2 (duplicate vs real second site) per `07_adjudication_decision_records.md`.
 - [ ] Bed lifecycle state machine live (READY/RESERVED/OCCUPIED/CLEANING/OUT_OF_SERVICE/BLOCKED) with state-log auditing.

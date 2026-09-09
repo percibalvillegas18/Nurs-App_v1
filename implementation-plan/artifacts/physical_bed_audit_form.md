@@ -12,9 +12,10 @@
 | Field | Value |
 |---|---|
 | Unit name (registry) | |
-| Unit code (registry) | e.g. `INTE`, `ICUE`, `ICUE_2`, `PLAS`, `PLAS_2`, `EDNA`, `EDNA_2`, `EDRE` |
+| Unit code (registry) | e.g. `ICU-MAIN`, `ICU-EXT`, `ICU-EXT-2`, `PLASTER`, `PLASTER-2`, `ED-NAV`, `ED-NAV-2`, `ED-RESUS`, `W3A`, `UCC`, `JAIL` |
 | Department / group | |
-| Registry `licensed_capacity` | |
+| Registry `capacity_class` | INPATIENT_LICENSED / ED_STRETCHER / PACU_BAY / OR_TABLE / PROCEDURE_ROOM / AMBULATORY_CHAIR / SUPPORT |
+| Registry `licensed_capacity` | inpatient class only; 0 otherwise |
 | Registry `is_bedded` | yes / no |
 
 ### 2. Physical confirmation
@@ -56,11 +57,11 @@ Auditor name/role · Date · Unit owner confirmation · Licensing confirmation
 
 ---
 
-## B. Global audit checklist (run across all 36 bedded + 7 non-bedded registry units)
-- [ ] Confirm each of the 7 non-bedded units has no assignable beds (DQ-4/DQ-9; incl. `EDAD`, `ORAD`, and the 5 SUPPORT & ADMINISTRATIVE rows).
-- [ ] Confirm `ED Navigation` (`EDNA`) bedded-vs-non-bedded status (DQ-9 follow-on).
-- [ ] Resolve each flagged pair: `ICUE` vs `ICUE_2`, `PLAS` vs `PLAS_2`, `EDNA` vs `EDNA_2` (DQ-1/DQ-2) via §A.2.
-- [ ] Sum of physically counted assignable beds across all units reconciles to the registry total (target **515** assignable; source 524) — record any delta and its cause.
+## B. Global audit checklist (run across all 43 registry units)
+- [ ] Confirm SUPPORT units have no assignable beds (DQ-4/DQ-9; incl. `ED-ADMIN`, `OR-ADMIN`, `ED-NAV`, `ED-NAV-2`, and the 5 SUPPORT & ADMINISTRATIVE rows).
+- [ ] Confirm `capacity_class` on the floor (Jail inpatient, UCC as ED, OR tables ≠ beds, clinics ≠ beds).
+- [ ] Resolve each flagged pair: `ICU-EXT` vs `ICU-EXT-2`, `PLASTER` vs `PLASTER-2`, `ED-NAV` vs `ED-NAV-2` (DQ-1/DQ-2) via §A.2.
+- [ ] Sum of physically counted **licensed inpatient** beds reconciles to **281** (incl. `ICU-EXT-2`) or **267** (if merged) — **not** mixed-class 515. Record ED stretchers (target 118) separately.
 - [ ] Record every delta as a reconciliation finding; update `normalized_department_unit.csv` + `org_rollup.csv` only after sign-off.
 - [ ] Approvals: Nursing Operations (ops), Facilities/Licensing (license count), DON. Registry applied by IT.
 

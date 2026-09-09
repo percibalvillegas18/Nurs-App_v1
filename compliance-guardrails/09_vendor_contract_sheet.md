@@ -26,7 +26,7 @@ Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, over
 
 ### Minimal evaluate body (SHIFT)
 ```json
-{ "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "INTE",
+{ "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "ICU-MAIN",
     "unit_name": "Intensive Care Unit (ICU) Main",
     "shift_type": "NIGHT", "shift_date": "2026-09-10", "start": "23:00", "end": "07:00" } }
 ```
@@ -35,7 +35,7 @@ Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, over
 { "evaluation_id": "EV-88213", "verdict": "ALLOW|INFORM|WARN|BLOCK",
   "overall_status": "COMPLIANT|STAFFING_RISK|BLOCKED",
   "rule_results": [ { "rule_code": "LAB-RS-001", "severity": "…",
-      "message": "…", "computed": 9, "threshold": 11 } ],
+      "message": "…", "computed": 6, "threshold": 5 } ],
   "exception_required": true|false }
 ```
 
@@ -56,12 +56,12 @@ Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, over
 | Code | Meaning | Example |
 |---|---|---|
 | `staff_id` | Staff Nurse Master id | `NUR-000125` |
-| `unit_code` | **Location-registry** unit code (single source of truth) | `INTE`, `WARD`, `EDRE` |
+| `unit_code` | **Location-registry** unit code (single source of truth) | `ICU-MAIN`, `W3A`, `ED-RESUS` |
 | `shift_type` | `MORNING/EVENING/NIGHT/EXTENDED/ONCALL` | |
 | `leave_type` | `ANNUAL/SICK/MATERNITY/EMERGENCY/UNPAID/…` | |
 | `eval_target_type` | `SHIFT/ROSTER/OT/LEAVE/DEPLOYMENT/ASSIGNMENT/PUNCH` | |
 
-> **Unit codes are NOT invented here.** `unit_code` must be a code from the **location registry** (`implementation-plan/artifacts/normalized_department_unit.csv`), which is the single source of truth. Example mappings used across these contracts: `INTE` = Intensive Care Unit (ICU) Main, `WARD` = Ward 3A - General Acute, `EDRE` = ED Resuscitation Area. Registry codes are placeholders finalized in Wave P0 — but payloads always carry a registry-issued code, never a display alias.
+> **Unit codes are NOT invented here.** `unit_code` must be a code from the **location registry** (`implementation-plan/artifacts/normalized_department_unit.csv`), which is the single source of truth. Example mappings: `ICU-MAIN` = Intensive Care Unit (ICU) Main, `W3A` = Ward 3A - General Acute, `ED-RESUS` = ED Resuscitation Area. Payloads always carry a registry-issued code, never a display alias.
 
 ## 7. Behavioural requirements
 - **Do not mutate on evaluate** — `evaluate` is read-only; publish/approve only after ALLOW (or approved exception).

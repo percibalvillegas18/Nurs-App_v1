@@ -27,7 +27,7 @@ erDiagram
     FACILITY { bigint facility_id PK; varchar facility_code UK; varchar name; varchar region; varchar mrn_prefix; varchar licensor; varchar status }
     DEPARTMENT { bigint department_id PK; varchar department_code UK; bigint facility_id FK; varchar name; varchar department_type; varchar status }
     UNIT_GROUP { bigint unit_group_id PK; bigint department_id FK; varchar name; varchar care_setting; varchar status }
-    NURSING_UNIT { bigint unit_id PK; varchar unit_code UK; bigint department_id FK; bigint unit_group_id FK; varchar unit_name; varchar unit_type; varchar care_setting; int licensed_capacity; boolean is_bedded; varchar status }
+    NURSING_UNIT { bigint unit_id PK; varchar unit_code UK; bigint department_id FK; bigint unit_group_id FK; varchar unit_name; varchar unit_type; varchar care_setting; varchar capacity_class; int source_bed_count; int resource_capacity; int licensed_capacity; boolean is_bedded; varchar dq_flag; date effective_from; date effective_to; varchar status }
     ROOM { bigint room_id PK; bigint unit_id FK; varchar room_number; varchar room_type; boolean isolation_capable }
     BED { bigint bed_id PK; bigint unit_id FK; bigint room_id FK; varchar bed_number; varchar bed_class; varchar care_features; boolean is_licensed; boolean is_operative; varchar bed_status }
     BED_STATE_LOG { bigint id PK; bigint bed_id FK; varchar from_state; varchar to_state; timestamp changed_at; bigint changed_by; varchar reason; varchar source }
@@ -65,26 +65,31 @@ erDiagram
 | name | varchar | exact CSV: EMERGENCY & ACUTE CARE, SURGICAL & PERIOPERATIVE SERVICES, CRITICAL CARE & INTENSIVE SERVICES, GENERAL & SPECIALTY SERVICES |
 | department_type | enum | BEDDED / NON_BEDDED |
 
-**unit_group** *(care-setting/service-line grouping; normalized from CSV parenthetical prefixes)*
+**unit_group** *(care-setting/service-line grouping — every unit has one)*
 | Attribute | Type | Notes |
 |---|---|---|
 | unit_group_id | PK | |
 | department_id | FK | |
-| name | varchar | `ACUTE GENERAL CARE`, `SPECIALIZED & DIAGNOSTIC`, `SUPPORT & ADMINISTRATIVE`; the 3 top service lines act as their own group |
-| care_setting | enum | INPATIENT_WARD / AMBULATORY_DIAGNOSTIC / BEDDED_SERVICE_LINE / NON_BEDDED_SUPPORT |
+| name | varchar | `EMERGENCY`, `PERIOPERATIVE`, `CRITICAL CARE`, `ACUTE GENERAL CARE`, `SPECIALIZED & DIAGNOSTIC`, `SECURE CARE`, `SUPPORT & ADMINISTRATIVE SERVICES` |
+| care_setting | enum | INPATIENT_WARD / CRITICAL_CARE / EMERGENCY / PERIOPERATIVE / AMBULATORY / DIAGNOSTIC / SUPPORT |
 
-**nursing_unit** *(the 43 care areas, CSV column 2; operational target 36 bedded + 7 non-bedded after reclassifying the 2 Admin & Support rows — see `06` DQ-9)*
+**nursing_unit** *(43 care areas. Patient-placeable = 19; inpatient-licensed = 14 incl. DQ-1a pending. See `06` DQ-10/12.)*
 | Attribute | Type | Notes |
 |---|---|---|
 | unit_id | PK | |
-| unit_code | UK | generated during normalization (`EDRE`,`WARD`,… unique across registry) |
-| department_id | FK | owning department |
-| unit_group_id | FK | nullable for top-level service-line areas |
+| unit_code | UK | stable identity (`W3A`, `ICU-MAIN`, `ED-RESUS`, `UCC`, …) |
+| department_id | FK | owning department (UCC re-parented to Emergency) |
+| unit_group_id | FK | required |
 | unit_name | varchar | clean display name (prefixes stripped) |
-| unit_type | enum | WARD / ICU / ED / OR / PACU / CLINIC / DIAGNOSTIC / SUPPORT / OTHER |
-| care_setting | enum | mirrors unit_group |
-| **licensed_capacity** | int | = CSV "Bed" for bedded rows (nil for the 7 non-bedded rows) |
-| is_bedded | boolean | false for support/admin areas |
+| unit_type | enum | WARD / SECURE_WARD / ICU / HDU / LDR / ED / UCC / OR / PACU / CLINIC / DIAGNOSTIC / PROCEDURE / THERAPY / SUPPORT |
+| care_setting | enum | mirrors unit_group domain |
+| **capacity_class** | enum | INPATIENT_LICENSED / ED_STRETCHER / PACU_BAY / OR_TABLE / PROCEDURE_ROOM / AMBULATORY_CHAIR / SUPPORT |
+| source_bed_count | int | raw CSV `Bed` (nullable if blank) |
+| resource_capacity | int | count for that class; 0 for SUPPORT |
+| **licensed_capacity** | int | = resource_capacity only when `INPATIENT_LICENSED`; else 0. Facility **281** (or **267** excl. DQ-1a). Never 515/524. |
+| is_bedded | boolean | true for inpatient + ED stretcher + PACU |
+| dq_flag | varchar | e.g. DQ1A_PENDING, DQ12_REPARENT |
+| effective_from / effective_to | date | version the row |
 
 **room**, **bed**
 | Attribute | Type | Notes |
@@ -96,7 +101,7 @@ erDiagram
 | is_licensed | boolean | counts toward licensed capacity |
 | is_operative / bed_status | enum | operational + lifecycle: READY/RESERVED/OCCUPIED/CLEANING/OUT_OF_SERVICE/BLOCKED |
 
-> **Numbering assumption:** CSV has unit-level counts only. In Bed-registry mode beds are provisioned per unit using a configurable bay/room sizing; numbering is synthetic and **must be validated** by physical audit before going live (Wave P2). If the facility already has a room/bed number list, that list supersedes provisioning.
+> **Numbering assumption:** CSV has unit-level counts only, and they are mixed-class (DQ-10). In Bed-registry mode provision `bed` rows **only** for `INPATIENT_LICENSED` (optional ED/PACU pools). Numbering is synthetic until the physical audit (Wave P2).
 
 ### Workforce / accountability domain (consumed from HR + HNWMS, mirrored here for RBAC)
 
@@ -111,5 +116,5 @@ erDiagram
 - Natural keys (`facility_code`, `department_code`, `unit_code`, `position_code`, `room/bed composite`) are UNIQUE and never reused after soft-delete.
 - All changes effective-dated; history preserved; no destructive deletes.
 - FK integrity enforced; assignment scope_id must reference a real location node.
-- `licensed_capacity` ≥ 0 and consistent across department/facility rollup for the reconciliation report.
+- `licensed_capacity` ≥ 0, **only** for `capacity_class=INPATIENT_LICENSED`, and consistent with the inpatient rollup (281/267 — not mixed-class 515).
 - Full schema DDL: `artifacts/ddl_schema.sql`.

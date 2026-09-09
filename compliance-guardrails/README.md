@@ -28,4 +28,4 @@ Read order: **`01_architecture_integration.md`** → `02_rules_data_model.md` �
 - **Balance ≠ safe:** Leave approval also checks departmental staffing coverage; schedule approval checks minimum staffing + skill mix + shift patterns, not just individual legal eligibility.
 - **No silent overrides:** exceptions are reason/risk/mitigation-gated, time-limited, multi-approver, fully audited.
 - **Parameterised & seasonal:** thresholds are configurable & effective-dated (Ramadan, holidays) — no hard-coded compliance.
-- **Authoritative note:** defaults reflect the spec's stated values (8h/48h, 6h/36h Ramadan, 21→30-day leave, OT = wage+50%). Confirm all parameters against current law/policy/CBAHI before go-live.
+- **Authoritative note:** Art. 98 8h/48h (Ramadan 6h/36h for Muslim workers); **Art. 100 shift averaging** (12h nursing is not a hard LAB-WH-001 block); Art. 101 intra-shift rest (not EU 11h); Art. 107 OT = wage+50%; Art. 109 leave 21→30 days. Confirm all parameters and article citations against current law/policy/CBAHI before go-live.

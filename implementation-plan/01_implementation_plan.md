@@ -19,7 +19,7 @@ These feed **Org Directory, ADT/MPI, Bed/Resource Management, Scheduling/Rosteri
 The two inputs describe **two distinct but linked dimensions** of the same enterprise, and treating them as one flat file is the #1 source of downstream rework:
 
 - **The organizational chart** is a **workforce / accountability taxonomy** (positions and reporting lines: Hospital Director → DON → Deputy → Nursing Ops → Unit Manager → Charge → Staff).
-- **The Department & Bed file** is a **physical service / location taxonomy** (facility → department → service line group → nursing unit → bed), carrying **licensed/capacity bed counts**.
+- **The Department & Bed file** is a **physical service / location taxonomy** (facility → department → service line group → nursing unit → bed), carrying a numeric `Bed` column that is **mixed-class** (inpatient, ED stretchers, OR tables, clinics) — class it before treating any number as licensed capacity (`06` DQ-10).
 
 The bridge between them is an **assignment/coverage relation**: staffing positions (workforce side) are granted scope over care locations (location side) — e.g. a *Unit Manager (workforce position)* owns the *"Ward 3A" location*. Bed *capacity* is a property of the **unit**, and individual **beds** are provisioned from that capacity for ADT assignment.
 
@@ -53,14 +53,14 @@ Full ERD in `02_erd_data_model.md`. Summary here. Three domains:
 ### 1.1 Location / operational domain (registry = our source of truth)
 - **facility** — the hospital (top node of physical tree). `facility_id PK`, name, region, mrn_prefix, licensor, status.
 - **department** — the 4 service departments in the CSV (*Emergency & Acute Care, Surgical & Perioperative, Critical Care & Intensive, General & Specialty*). `department_id PK`, `department_code UK`, facility FK, name, `department_type` (BEDDED / NON_BEDDED).
-- **unit_group** (a.k.a. *service line / care setting* node) — the parenthetical prefixes in the CSV (`ACUTE GENERAL CARE`, `SPECIALIZED & DIAGNOSTIC`, `SUPPORT & ADMINISTRATIVE`) and, at the top three service lines, the department itself acts as the group. `unit_group_id PK`, department FK, name, `care_setting` (INPATIENT_WARD / AMBULATORY_DIAGNOSTIC / BEDDED_SERVICE_LINE / NON_BEDDED_SUPPORT).
-- **nursing_unit** (a.k.a. ward / care area) — the 43 care areas in the CSV. `unit_id PK`, `unit_code UK`, department FK, unit_group FK, `unit_name`, `care_setting`, `unit_type` (Ward/ICU/ED/OR/PACU/Clinic/Support…), **`licensed_capacity`** (the CSV "Bed"), `is_bedded` flag. **Assignable-bed target:** the CSV's 38 bed-count rows include 2 Admin & Support areas (`EDAD`, `ORAD`) reclassified to non-bedded → **36 bedded + 7 non-bedded** (see `06` DQ-9).
+- **unit_group** (a.k.a. *service line / care setting* node) — every unit has a group (`EMERGENCY`, `PERIOPERATIVE`, `CRITICAL CARE`, `ACUTE GENERAL CARE`, `SPECIALIZED & DIAGNOSTIC`, `SECURE CARE`, `SUPPORT & ADMINISTRATIVE SERVICES`). `unit_group_id PK`, department FK, name, `care_setting` (INPATIENT_WARD / CRITICAL_CARE / EMERGENCY / PERIOPERATIVE / AMBULATORY / DIAGNOSTIC / SUPPORT).
+- **nursing_unit** (a.k.a. ward / care area) — the 43 care areas in the CSV. `unit_id PK`, `unit_code UK`, department FK, unit_group FK, `unit_name`, `unit_type`, `care_setting`, **`capacity_class`** (INPATIENT_LICENSED / ED_STRETCHER / PACU_BAY / OR_TABLE / PROCEDURE_ROOM / AMBULATORY_CHAIR / SUPPORT), `source_bed_count` (raw CSV), `resource_capacity` (count for that class), **`licensed_capacity`** (INPATIENT_LICENSED only; 0 otherwise), `is_bedded` (patient-placeable: inpatient + ED stretcher + PACU). **Do not treat the CSV "Bed" sum (524) or the DQ-9 remainder (515) as licensed inpatient beds** — see `06` DQ-10. Proposed licensed inpatient = **281** including pending `ICU-EXT-2`, or **267** if that row is merged (DQ-1a).
 - **room** — grouping level inside a unit. `room_id PK`, unit FK, room_number, room_type (private/shared/bay), isolation capability.
 - **bed** — physical assignable resource. `bed_id PK`, unit FK, room FK, bed_number, bed_class, care_features (telemetry/vent/neg-pressure), `is_licensed`, `is_operative`, lifecycle `bed_status`.
 
-**Bed granularity decision (senior note).** The CSV reports **unit-level capacity counts only** (source total 524; **operational assignable = 515** after DQ-9 — see `06`). There is **no room/bed-number detail**. Therefore the physical `bed`/`room` rows are **auto-provisioned from `licensed_capacity`** (i.e., the 36 bedded units = 515 beds) using configurable room-bay sizing, and the resulting room/bed numbering is a **stated assumption** that MUST be reconciled in Wave P0/P2 with a physical count (see §7 Reconciliation). Two supported loading modes:
-- **Capacity mode:** store `licensed_capacity` on the unit only (best if bed-management is unit/ward-occupancy based).
-- **Bed-registry mode (recommended for ADT room/bed):** generate one `bed` row per capacity unit, grouped into `room` records, enabling individual bed assignment and state. Provide `room_size` default and per-unit override.
+**Bed granularity decision (senior note).** The CSV reports **unit-level counts only**, and those counts are **mixed capacity classes** (DQ-10). Auto-provision `bed`/`room` rows **only** for `capacity_class = INPATIENT_LICENSED` (281 incl. DQ-1a pending, or 267 if merged) using configurable room-bay sizing. Optionally provision a **separate** ED-stretcher pool (118) and PACU-bay pool (8). **Do not** provision ADT beds for OR tables, procedure rooms, clinic chairs, or support. Numbering is synthetic until the physical audit (Wave P0/P2). Two supported loading modes:
+- **Capacity mode:** store classed capacities on the unit only (best if occupancy is unit-level).
+- **Bed-registry mode (recommended for ADT room/bed):** generate one `bed` row per **inpatient licensed** slot (plus optional ED/PACU pools). Provide `room_size` default and per-unit override.
 
 ### 1.2 Workforce / accountability domain (consumed from HR + HNWMS)
 - **person** (staff master; owned by HR/HNWMS) — `person_id`, name, license, dept-of-record.
@@ -89,8 +89,8 @@ Full ERD in `02_erd_data_model.md`. Summary here. Three domains:
 | Nursing Operations clinical areas | unit_group / department | admit location mapping | owning department | demand driver | cost center | staffing demand source |
 | Nursing Admin / Workforce Mgmt | org_node | — | — | scheduling config | HR functions | modules (recruitment→analytics) |
 | **Department** (4) | department | admission dept | owning dept | unit → dept grouping | cost center | unit taxonomy |
-| **Unit / Ward** (43: 36 bedded + 7 non-bedded) | nursing_unit | ADT assign unit | bed pool owner | staffing schedule unit | pay location | roster unit |
-| **Bed capacity** (515 assignable; 524 raw source) | unit `licensed_capacity` | availability source | bed registry (room/bed) | capacity for staffing ratios | — | census input to staffing |
+| **Unit / Ward** (43: 19 patient-placeable + 24 non-ADT; 14 inpatient-licensed incl. DQ-1a pending) | nursing_unit | ADT assign unit | bed pool owner | staffing schedule unit | pay location | roster unit |
+| **Bed capacity** (licensed inpatient **281 / 267**, not mixed-class 515/524 — see `06` DQ-10) | unit `licensed_capacity` (INPATIENT_LICENSED only) | availability source | bed registry (room/bed) | capacity for staffing ratios | — | census input to staffing |
 | Nursing Manager / Charge / Team / Staff | workforce_position + assignment | scope approvals | bed release authority | shift roles | pay grade | roles/groups |
 
 **Integration principle:** One **location master** (Org Directory) publishes unit codes that **ADT, Bed Mgmt, Scheduling, Payroll, and HNWMS all consume** — never re-keyed. Census flows EMR→Bed Mgmt→(staffing demand)→HNWMS.
@@ -182,13 +182,13 @@ Each step writes an audit entry and, where integration is live, emits the HL7 AD
 ### 5.4 Validation rules (examples)
 - Department name non-empty & unique; known vocabulary of 4 depts.
 - Unit code unique & non-null; unit belongs to exactly one department.
-- `licensed_capacity` integer ≥ 0; ≤ facility licensed total; bed count matches capacity (bed-registry mode).
-- Care-setting must be consistent with bedded/non-bedded (support/admin → no beds).
+- `licensed_capacity` integer ≥ 0 and **only** populated for `capacity_class = INPATIENT_LICENSED`; bed-registry `bed` count matches that class (not OR/clinic/support).
+- Care-setting and `capacity_class` consistent (`SUPPORT` → no ADT beds; `OR_TABLE` / `PROCEDURE_ROOM` / `AMBULATORY_CHAIR` → no licensed inpatient).
 - Position level L1–L7; assignment scope exists in location registry; no orphan scopes.
 - Duplicate/near-duplicate names (e.g., "ICU Extension" vs "ICU Extension (2nd Location)") flagged for adjudication — dispositions & decision records in `07_adjudication_decision_records.md`, confirmed by the physical audit.
 
 ### 5.5 Reconciliation
-- **Migration-time:** count & total checks vs source (raw 524 beds; 4 depts; 38 bed-count rows + 5 blank-bed support rows; 43 units) and vs **operational target** (515 assignable; 36 bedded + 7 non-bedded). The 9-bed delta is the `06` DQ-9 adjudication (EDAD 7 + ORAD 2). Compare staged vs loaded vs source and report exact deltas with the adjudication delta separately documented.
+- **Migration-time:** count & total checks vs source (raw 524; 4 depts; 43 units) and vs **classed seed**: `source_bed_count` sums to 524; INPATIENT_LICENSED **281** (or **267** excl. DQ-1a); ED_STRETCHER 118; patient-placeable 19 units. The 9-bed DQ-9 delta (ED-ADMIN 7 + OR-ADMIN 2) and the mixed-class 515 figure are history only. Compare staged vs loaded vs source and report deltas **by capacity_class**.
 - **Operating-time:** daily *census vs bed-registry occupancy*; weekly *capacity config vs licensing submission*; monthly *full audit vs source of truth*. Every run produces a signed reconciliation report (see P0/P5).
 - **Physical count audit** at Wave P2 to validate the auto-provisioned room/bed numbering assumption (see `artifacts/physical_bed_audit_form.md`); the same run settles the DQ-1/DQ-2 duplicate-vs-real-site adjudications (`07_adjudication_decision_records.md`).
 
@@ -199,7 +199,7 @@ Full table in `05_test_acceptance_criteria.md`; includes CSV with 39/32/32/3/7 r
 
 ## 6. Reporting & Alerts
 
-- **Occupancy %** = current occupied beds ÷ `licensed_capacity` (unit/dept/facility rollups).
+- **Occupancy %** = occupied **inpatient** beds ÷ **operational inpatient** capacity (`capacity_class = INPATIENT_LICENSED`; HNWMS M1.2). Do **not** divide by mixed-class 515/524. ED stretchers and PACU bays report on their own boards.
 - **Turnover** = discharges + transfers-out per period (and bed-turnover per unit).
 - **Available / blocked / cleaning / out-of-service** bed counts with dwell times.
 - **Capacity thresholds:** configurable amber (e.g. ≥85%) and red (≥95%) occupancy; red-lines clean/discharge/blocked counts; triggers alerts + escalation (§4.3).
@@ -228,6 +228,7 @@ Full table in `05_test_acceptance_criteria.md`; includes CSV with 39/32/32/3/7 r
 | UI placement recommendations | `04_ui_placement_recommendations.md` |
 | Test & acceptance criteria | `05_test_acceptance_criteria.md` |
 | Source reconciliation & cleaned taxonomy | `06_source_reconciliation.md`, `artifacts/normalized_department_unit.csv`, `artifacts/org_rollup.csv` |
+| DON + Licensing P0 sign-off (one page) | `08_signoff_don_licensing.md` |
 | This implementation plan | `01_implementation_plan.md` |
 
 ---

@@ -12,16 +12,18 @@ Implementation-ready deliverables for ingesting the organizational chart, depart
 | 05 | `05_test_acceptance_criteria.md` | Import/validation + functional acceptance test cases |
 | 06 | `06_source_reconciliation.md` | Data-quality findings, cleaned taxonomy, open sign-off questions |
 | 07 | `07_adjudication_decision_records.md` | DQ-1/DQ-2 proposed dispositions + per-item decision/sign-off records; how the physical audit resolves them |
+| 08 | `08_signoff_don_licensing.md` | One-page DON + Licensing (+ HR/Legal) P0 sign-off: 267 vs 281, DQ-1/2, 12h Art. 100, maternity |
 
 ## Artifacts
 | File | Contents |
 |---|---|
-| `artifacts/normalized_department_unit.csv` | Cleaned 43-unit load source (canonical registry seed) |
-| `artifacts/org_rollup.csv` | Facility/department/unit-group capacity rollups (515 assignable beds, 4 depts, 43 units; source 524) |
+| `artifacts/normalized_department_unit.csv` | Cleaned 43-unit load source with `capacity_class` and stable `unit_code`s (canonical registry seed) |
+| `artifacts/org_rollup.csv` | Classed rollups: licensed inpatient **281** (or **267** excl. DQ-1a), ED stretchers 118; mixed-class 515/524 are history only |
 | `artifacts/ddl_schema.sql` | PostgreSQL DDL for all domains |
 | `artifacts/physical_bed_audit_form.md` | Physical bed & space audit instrument (per-unit sheet + global checklist) to reconcile the registry and resolve DQ-1/DQ-2/DQ-8/DQ-9 |
 
 ## Key figures
-- **4 departments · 43 locations · 515 assignable beds** (36 bedded + 7 non-bedded). Raw source total is **524**; the 9-bed delta = 2 Admin & Support rows (`EDAD`, `ORAD`) reclassified non-bedded (see `06` DQ-9).
-- Assignable dept beds: Emergency **106** · Surgical **29** · Critical/ICU **99** · General & Specialty **281** (source: 113 / 31 / 99 / 281).
+- **4 departments · 43 locations.** Raw CSV Bed sum **524**. DQ-9 mixed-class remainder **515** is **not** licensed inpatient (see `06` DQ-10).
+- **Proposed licensed inpatient: 281** (14 units, includes pending `ICU-EXT-2`) or **267** if DQ-1a is merged. ED stretchers **118** (UCC re-parented to Emergency). Patient-placeable (inpatient+ED+PACU) **407**.
+- Occupancy % uses operational **inpatient** beds, not 515/524.
 - Start at **Wave P0**: execute `06_source_reconciliation.md`, run the physical audit (`artifacts/physical_bed_audit_form.md`), confirm DQ dispositions per `07_adjudication_decision_records.md`, obtain sign-offs, then provision Org Directory + Bed registry per `03_configuration_checklist.md`.

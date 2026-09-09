@@ -1276,7 +1276,7 @@ Prevent or flag transactions that could create labor-law, credentialing, staffin
 ## A.2 Rule catalogue (55 rules)
 Machine-readable in `compliance_rule_catalog.csv`; full table in `03_compliance_rule_catalog.md`. Groups: **Working hours** (LAB-WH-*), **Rest/shift patterns** (LAB-RS-*), **Overtime** (LAB-OT-*), **Leave** (LAB-LV-*), **Contract/employment** (LAB-CT-*), **CBAHI license/credential/competency/training** (CBA-LIC/CRED/COMP/TRAIN), **CBAHI staffing/skill-mix/safety/quality** (CBA-STAFF/SKILL/SAFE/MED/IP/EM/INCID/DOC/QUAL), **Hospital policy** (HOS-POL-*).
 
-Representative baselines (must be confirmed against current law/policy): 8 h/day & 48 h/week (6 h/day & 36 h/week in Ramadan for applicable workers); overtime = hourly wage + 50% (compensatory leave with consent possible); annual leave ≥ 21 days rising to ≥ 30 after five consecutive years.
+Representative baselines (must be confirmed against current law/policy): Art. 98 8 h/day & 48 h/week (Ramadan 6 h/36 h for Muslim workers); **Art. 100 shift-system 3-week averaging** so a 12 h nursing roster is not a hard LAB-WH-001 block; Art. 101 intra-shift rest (not EU 11 h between shifts); Art. 107 overtime = hourly wage + 50%; Art. 109 annual leave ≥ 21 days rising to ≥ 30 after five consecutive years.
 
 ## A.3 Engine data model
 `compliance_rule` (master, with `compliance_rule_scope` + `compliance_rule_parameter`), `working_calendar_adjustment` (Ramadan/holiday), `eligibility_snapshot`, `shift_candidate`/`leave_request_candidate`, `evaluation_run` + `evaluation_rule_result`, `guardrail_exception_request` + approval, `compliance_audit_log`, `employee_compliance_status`/`shift_compliance_status`, `staffing_requirement`/`skill_mix_rule`. DDL: `artifacts/ddl_compliance_engine.sql`.

@@ -31,12 +31,12 @@ Companions: `01_architecture_integration.md` (architecture/evaluation points), `
 >
 > | Scenario in this doc | Registry `unit_code` | Registry `unit_name` |
 > |---|---|---|
-> | ICU Main | `INTE` | Intensive Care Unit (ICU) Main |
-> | Ward 3A - General Acute | `WARD` | Ward 3A - General Acute |
-> | ED Resuscitation Area | `EDRE` | ED Resuscitation Area |
+> | ICU Main | `ICU-MAIN` | Intensive Care Unit (ICU) Main |
+> | Ward 3A - General Acute | `W3A` | Ward 3A - General Acute |
+> | ED Resuscitation Area | `ED-RESUS` | ED Resuscitation Area |
 >
 > **Two honest caveats:**
-> 1. `NICU`, `WARD3A`, and bare `ICU` are **not** registry codes and appear nowhere below. The ICU-like scenario uses the real `INTE` unit; there is **no NICU** in the current registry (nearest real high-acuity/pediatric rows are `PEDI` Pediatric Ward and `NEWB` Newborn Screening Unit).
+> 1. `NICU`, `WARD3A`, `ICU-MAIN`, and bare `ICU` are **not** registry codes. The ICU scenario uses `ICU-MAIN`; there is **no NICU** in the current registry (nearest pediatric row is `PEDS`).
 > 2. The registry's `unit_code` values are **placeholders to be finalized in Wave P0** (`implementation-plan/06`). Payloads must always carry a registry-issued code — never a display alias — but the authoritative code set is confirmed during that sign-off.
 
 ---
@@ -70,7 +70,7 @@ Content-Type: application/json
   "target": {
     "type": "SHIFT",
     "staff_id": "NUR-000125",
-    "unit_code": "INTE",          // location-registry code = Intensive Care Unit (ICU) Main
+    "unit_code": "ICU-MAIN",          // location-registry code = Intensive Care Unit (ICU) Main
     "unit_name": "Intensive Care Unit (ICU) Main",
     "shift_type": "NIGHT",
     "shift_date": "2026-09-10",
@@ -103,7 +103,7 @@ Content-Type: application/json
   "evaluation_id": "EV-88101",
   "verdict": "WARN",
   "overall_status": "STAFFING_RISK",
-  "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "WARD", "unit_name": "Ward 3A - General Acute", "shift_date": "2026-09-10" },
+  "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "W3A", "unit_name": "Ward 3A - General Acute", "shift_date": "2026-09-10" },
   "rule_results": [
     { "rule_code": "CBA-STAFF-001", "severity": "WARNING", "result": "WARN",
       "message": "Ward 3A - General Acute morning requires 10 RN; scheduled 9", "computed": 9, "threshold": 10 },
@@ -119,10 +119,10 @@ Content-Type: application/json
   "evaluation_id": "EV-88213",
   "verdict": "BLOCK",
   "overall_status": "BLOCKED",
-  "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "INTE", "unit_name": "Intensive Care Unit (ICU) Main", "shift_date": "2026-09-10" },
+  "target": { "type": "SHIFT", "staff_id": "NUR-000125", "unit_code": "ICU-MAIN", "unit_name": "Intensive Care Unit (ICU) Main", "shift_date": "2026-09-10" },
   "rule_results": [
     { "rule_code": "LAB-RS-001", "severity": "BLOCK", "result": "FAIL",
-      "message": "Rest period between shifts is 9h; minimum 11h required" },
+      "message": "Six consecutive hours without a rest break; Art. 101 requires a break after 5h" },
     { "rule_code": "CBA-LIC-001", "severity": "ALLOW", "result": "PASS", "message": "License valid" }
   ],
   "exception_required": true,
@@ -139,10 +139,10 @@ POST /api/hnwms/compliance/evaluate/batch
 ```
 ```json
 {
-  "target": { "type": "ROSTER", "unit_code": "INTE", "unit_name": "Intensive Care Unit (ICU) Main", "month": "2026-09" },
+  "target": { "type": "ROSTER", "unit_code": "ICU-MAIN", "unit_name": "Intensive Care Unit (ICU) Main", "month": "2026-09" },
   "rows": [
-    { "row_ref": "INTE-20260910-M-01", "staff_id": "NUR-000125", "shift_type": "MORNING", "shift_date": "2026-09-10", "start": "07:00", "end": "15:00" },
-    { "row_ref": "INTE-20260910-N-04", "staff_id": "NUR-000210", "shift_type": "NIGHT",  "shift_date": "2026-09-10", "start": "23:00", "end": "07:00" }
+    { "row_ref": "ICU-MAIN-20260910-M-01", "staff_id": "NUR-000125", "shift_type": "MORNING", "shift_date": "2026-09-10", "start": "07:00", "end": "15:00" },
+    { "row_ref": "ICU-MAIN-20260910-N-04", "staff_id": "NUR-000210", "shift_type": "NIGHT",  "shift_date": "2026-09-10", "start": "23:00", "end": "07:00" }
   ]
 }
 ```
@@ -150,8 +150,8 @@ POST /api/hnwms/compliance/evaluate/batch
 {
   "roster_verdict": "BLOCK",               // strictest across rows
   "evaluations": [
-    { "row_ref": "INTE-20260910-M-01", "evaluation_id": "EV-88110", "verdict": "ALLOW" },
-    { "row_ref": "INTE-20260910-N-04", "evaluation_id": "EV-88111", "verdict": "WARN",
+    { "row_ref": "ICU-MAIN-20260910-M-01", "evaluation_id": "EV-88110", "verdict": "ALLOW" },
+    { "row_ref": "ICU-MAIN-20260910-N-04", "evaluation_id": "EV-88111", "verdict": "WARN",
       "rule_results": [{ "rule_code": "CBA-SKILL-001", "severity": "WARNING", "message": "Charge nurse required on ICU Main night shift" }] }
   ],
   "blocked_count": 0,
@@ -192,7 +192,7 @@ POST /api/hnwms/compliance/evaluate
 ```
 ```json
 {
-  "target": { "type": "LEAVE", "staff_id": "NUR-000210", "unit_code": "INTE", "unit_name": "Intensive Care Unit (ICU) Main",
+  "target": { "type": "LEAVE", "staff_id": "NUR-000210", "unit_code": "ICU-MAIN", "unit_name": "Intensive Care Unit (ICU) Main",
     "leave_type": "ANNUAL", "start_date": "2026-09-20", "end_date": "2026-10-05" }
 }
 ```
@@ -254,8 +254,8 @@ The `restriction.period` encodes the **time-limited** exception window; `input` 
     {
       "severity": "error",
       "code": "business-rule",
-      "details": { "coding": [{ "system": "http://hnwms.local/rules", "code": "LAB-RS-001", "display": "Minimum rest period between shifts" }] },
-      "diagnostics": "Rest period 9h below required 11h",
+      "details": { "coding": [{ "system": "http://hnwms.local/rules", "code": "LAB-RS-001", "display": "Intra-shift rest and daily presence cap" }] },
+      "diagnostics": "Six consecutive hours without a rest break; Art. 101 requires a break after 5h",
       "expression": ["Shift.end_time", "Shift.start_time"]
     },
     {
@@ -279,16 +279,16 @@ This is the bridge to the **bed/org implementation plan** (`implementation-plan/
 MSH|^~\&|EMR|AIGH|HNWMS|AIGH|20260909100100||ADT^A01|MSGCENS0001|P|2.5
 EVN|A01|20260909100100
 PID|1||MRN-0099331^^^AIGH^MR||Patient^Sample||19850412|M
-PV1|1|I|INTE^Intensive Care Unit (ICU) Main^AIGH-INTE^^B||||1234^Attending^Physician||||||||||||||||||||INTE|||ADM
+PV1|1|I|ICU-MAIN^Intensive Care Unit (ICU) Main^AIGH-ICU-MAIN^^B||||1234^Attending^Physician||||||||||||||||||||ICU-MAIN|||ADM
 ```
-The engine/HNWMS consumes the `PV1.3` patient location (unit `INTE` = ICU Main) to **increment census** for ICU Main. This feeds `staffing_requirement` (required RN for the ICU Main census/acuity).
+The engine/HNWMS consumes the `PV1.3` patient location (unit `ICU-MAIN` = ICU Main) to **increment census** for ICU Main. This feeds `staffing_requirement` (required RN for the ICU Main census/acuity).
 
 ### 7.2 Census → staffing requirement → engine check
 After A01, the derived staffing requirement for the ICU Main night shift is evaluated before a roster can be published:
 ```json
-// GET /api/hnwms/compliance/staffing-requirement?unit=INTE&shift=NIGHT&date=2026-09-10
+// GET /api/hnwms/compliance/staffing-requirement?unit=ICU-MAIN&shift=NIGHT&date=2026-09-10
 {
-  "unit_code": "INTE", "unit_name": "Intensive Care Unit (ICU) Main", "shift": "NIGHT", "date": "2026-09-10",
+  "unit_code": "ICU-MAIN", "unit_name": "Intensive Care Unit (ICU) Main", "shift": "NIGHT", "date": "2026-09-10",
   "census": 12, "acuity": 3.5,
   "required": { "rn": 6, "senior_rn": 2, "charge": 1, "specialty": 1, "total": 10 },
   "scheduled": { "rn": 5, "senior_rn": 2, "charge": 1, "specialty": 1, "total": 9 },
@@ -302,16 +302,16 @@ After A01, the derived staffing requirement for the ICU Main night shift is eval
 MSH|^~\&|EMR|AIGH|HNWMS|AIGH|20260910203000||ADT^A03|MSGCENS0002|P|2.5
 EVN|A03|20260910203000
 PID|1||MRN-0099331^^^AIGH^MR||Patient^Sample||19850412|M
-PV1|1|I|WARD^Ward 3A - General Acute^AIGH-WARD^^B||||||||||||||||||||||WARD|||DIS
+PV1|1|I|W3A^Ward 3A - General Acute^AIGH-W3A^^B||||||||||||||||||||||W3A|||DIS
 ```
-Census for `WARD` (Ward 3A - General Acute) decrements; occupancy and staffing-requirement recompute. If a discharge reduces the required RN count enough to close a staffing gap, previously BLOCKed shifts may re-evaluate to ALLOW (the engine re-runs on occupancy/roster change).
+Census for `W3A` (Ward 3A - General Acute) decrements; occupancy and staffing-requirement recompute. If a discharge reduces the required RN count enough to close a staffing gap, previously BLOCKed shifts may re-evaluate to ALLOW (the engine re-runs on occupancy/roster change).
 
 ### 7.4 Transfer A02 (bed/unit change)
 ```hl7
 MSH|^~\&|EMR|AIGH|HNWMS|AIGH|20260910141500||ADT^A02|MSGCENS0003|P|2.5
 EVN|A02|20260910141500
 PID|1||MRN-0099311^^^AIGH^MR||Patient^Transfer||19770301|F
-PV1|1|I|INTE^Intensive Care Unit (ICU) Main^AIGH-INTE^^B|WARD^Ward 3A - General Acute^AIGH-WARD^^B
+PV1|1|I|ICU-MAIN^Intensive Care Unit (ICU) Main^AIGH-ICU-MAIN^^B|W3A^Ward 3A - General Acute^AIGH-W3A^^B
 ```
 Source unit census decrements, target unit census increments — matching the ADT/bed workflow in `implementation-plan/`.
 

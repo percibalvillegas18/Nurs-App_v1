@@ -5,8 +5,8 @@ Human-readable grouping of the machine-readable catalogue in `artifacts/complian
 ## A. Working hours (LAB-WH-*)
 | Code | Rule | Default | Action |
 |---|---|---|---|
-| LAB-WH-001 | Max daily working hours (≤ 8 h std) | BLOCK | BLOCK |
-| LAB-WH-002 | Max weekly hours (≤ 48 h) | WARNING | WARN/ESCALATE |
+| LAB-WH-001 | Max daily hours — **pattern-aware** (Art. 98 8h standard; Art. 100 shift-system 3-week average; do not hard-block 12h nursing) | BLOCK | BLOCK (against the *applicable* pattern) |
+| LAB-WH-002 | Max weekly hours — pattern-aware (Art. 98 48h; Art. 100 3-week average) | WARNING | WARN/ESCALATE |
 | LAB-WH-003 | Ramadan daily hours (≤ 6 h, applicable workers) | WARNING | AUTO RECALC |
 | LAB-WH-004 | Ramadan weekly hours (≤ 36 h) | WARNING | AUTO RECALC |
 | LAB-WH-005 | Official-holiday work | WARNING | OT_CALC + APPROVAL |
@@ -15,8 +15,8 @@ Human-readable grouping of the machine-readable catalogue in `artifacts/complian
 ## B. Rest & shift patterns (LAB-RS-*)
 | Code | Rule | Default | Action |
 |---|---|---|---|
-| LAB-RS-001 | Min rest between shifts (e.g. ≥ 11 h) | BLOCK | BLOCK |
-| LAB-RS-002 | Weekly rest entitlement | WARNING | WARN/ESCALATE |
+| LAB-RS-001 | Intra-shift rest + daily presence cap (Arts. 101–102; **not** EU 11h between shifts) | BLOCK | BLOCK |
+| LAB-RS-002 | Weekly rest (Art. 104 Friday ≥ 24 h) | WARNING | WARN/ESCALATE |
 | LAB-RS-003 | Consecutive working days cap | WARNING | WARN |
 | LAB-RS-004 | Consecutive-shift detection | WARNING | WARN |
 
@@ -84,9 +84,11 @@ Human-readable grouping of the machine-readable catalogue in `artifacts/complian
 ## H. Hospital policy (HOS-POL-*)
 | Code | Rule | Default | Action |
 |---|---|---|---|
-| HOS-POL-001 | Shift-pattern limits / night-shift frequency | WARNING | WARN |
+| HOS-POL-001 | Shift-pattern limits / night frequency / **rest between shifts** (hospital policy — not EU 11h) | WARNING | WARN |
 | HOS-POL-002 | Weekend assignment distribution | ADVISORY | INFORM |
 | HOS-POL-003 | Rolling overtime exposure cap | WARNING | WARN/ESCALATE |
 | HOS-POL-004 | Unit-authorization for assignment | BLOCK | VALIDATE |
 
-> Category totals: **LABOR 35 · CBAHI 16 · HOSPITAL 4**. Each row in `compliance_rule_catalog.csv` carries its `trigger_event`, `module_owner`, `legal_reference`, and `exception_allowed` for direct loading into `compliance_rule`.
+> Category totals: **LABOR 35 · CBAHI 16 · HOSPITAL 4**. Each row in `compliance_rule_catalog.csv` carries its `trigger_event`, `module_owner`, `legal_reference` (**article numbers**, not paraphrases), and `exception_allowed` for direct loading into `compliance_rule`.
+>
+> **LAB-WH-001 is pattern-aware.** A 12-hour ICU/ED shift on a registered Art. 100 shift-system unit is not a Labor Law violation by duration alone. `exception_allowed=True`. Between-shift rest lives on **HOS-POL-001**, not LAB-RS-001. Confirm every `legal_reference` against the current Labor Law text and CBAHI edition before go-live. Sick / Hajj / marriage / bereavement / paternity leave are statutory but **out of this 55-row seed** (see LAB-LV-007 notes).

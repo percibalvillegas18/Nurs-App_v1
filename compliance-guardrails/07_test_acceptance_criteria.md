@@ -16,9 +16,10 @@ Tests each control domain and the engine/exception mechanics. Each row implies: 
 ## B. Working hours / rest
 | ID | Scenario | Expected |
 |---|---|---|
-| WH-01 | Shift takes a nurse > 8 h/day | BLOCK (LAB-WH-001). |
-| WH-02 | Weekly total approaches 48 h | WARNING/escalation (LAB-WH-002). |
-| WH-03 | Shift violates minimum rest between shifts | BLOCK (LAB-RS-001). |
+| WH-01 | 12 h shift on a **registered Art. 100 shift-system** unit (e.g. ICU-MAIN 19:00–07:00) | **ALLOW** on LAB-WH-001 (duration alone is not a violation). Evaluate 3-week average. |
+| WH-01a | 10 h shift on a **standard day-pattern** (Art. 98) employee | BLOCK or route to OT (LAB-WH-001 / LAB-OT-*) — 8h wall applies. |
+| WH-02 | Weekly total approaches the **applicable** cap (48 h standard or Art. 100 average) | WARNING/escalation (LAB-WH-002). |
+| WH-03 | Six consecutive hours with no ≥30 min rest/prayer/meal break | BLOCK (LAB-RS-001, Art. 101). Rest-between-shifts is HOS-POL-001, not LAB-RS-001. |
 | WH-04 | Same-day double shift | BLOCK/approval-required (LAB-WH-006). |
 | WH-05 | Consecutive-shift cap reached | WARNING (LAB-RS-003/004). |
 | WH-06 | Official-holiday shift assigned | Routes to OT calculation + approval (LAB-WH-005). |
@@ -64,7 +65,7 @@ Tests each control domain and the engine/exception mechanics. Each row implies: 
 
 ## G. Minimum staffing / skill mix / safety
 
-> **Scenario note:** The unit labels in G (ICU, Medical Ward, ED, NICU) are **illustrative by unit-type**, matching the original requirements examples — they are **not** location-registry `unit_code`s. In acceptance tests each scenario is bound to a real registry unit and its code (e.g., ICU Main = `INTE`); `NICU` does not exist in the current registry and is used here only as a generic high-acuity example.
+> **Scenario note:** The unit labels in G (ICU, Medical Ward, ED, NICU) are **illustrative by unit-type**. Bind each scenario to a real registry code (ICU Main = `ICU-MAIN`, Medical Ward = `W3A`, ED = `ED-RESUS`). `NICU` does not exist — use `ICU-MAIN` or `PEDS`.
 | ID | Scenario | Expected |
 |---|---|---|
 | ST-01 | ICU required 12 / scheduled 12 | 🟢 COMPLIANT (CBA-STAFF-001). |

@@ -7,8 +7,8 @@ Companion to the implementation plan. Two sections: **import/validation test cas
 | ID | Scenario / input | Expected result |
 |---|---|---|
 | TC-01 | Load full `Department & Bed.csv` (raw import) | 43 units staged; **4 departments**; raw totals match source: 524 bed values, 38 rows with a Bed + 5 blank-bed rows. Zero unexplained delta at staging. |
-| TC-01a | Adjudicate to operational target | After reclassifying `EDAD` (7) & `ORAD` (2) Admin & Support rows → **515 assignable beds, 36 bedded + 7 non-bedded**; 9-bed delta logged as DQ-9. |
-| TC-02 | Emergency dept rows (39,32,32,3,7) | Raw subtotal 113 (5 bed-value rows); operational 106 after `EDAD` reclassified non-bedded (4 bedded + 1 non-bedded). |
+| TC-01a | Adjudicate to classed seed | After DQ-9 (`ED-ADMIN` 7, `OR-ADMIN` 2) plus DQ-10/12: INPATIENT_LICENSED **281** (or **267** excl. `ICU-EXT-2`); ED_STRETCHER **118** (includes UCC); `source_bed_count` still sums to 524. Mixed-class 515 is history only — not a licensed total. |
+| TC-02 | Emergency dept rows (39,32,32,3,7) + UCC 15 | Raw subtotal 113 (5 rows). Seed: 6 units after UCC re-parent; ED stretchers 39+32+32+15=118; `ED-NAV` and `ED-ADMIN` non-bedded. |
 | TC-03 | `ICU Extension` (Critical, 14) vs `ICU Extension (2nd Location)` (Gen & Spec, 14) | Flagged as **near-duplicate** for human adjudication; both load under distinct departments pending decision. |
 | TC-04 | `Plaster Unit` (Surgical) vs `Plaster Unit (2nd Location)` (Gen & Spec) | Same duplicate-detection rule; routed to adjudication. |
 | TC-05 | `ED Navigation` vs `ED Navigator (2nd Location)` naming | Spelling-difference rule flags pair; no silent merge. |
@@ -39,8 +39,8 @@ Companion to the implementation plan. Two sections: **import/validation test cas
 | AC-10 | RBAC separation of duties | Scheduler attempts bed release | Denied — no bed-control permission. |
 | AC-11 | Audit completeness | Any bed/registry/assignment change | Immutable log row: who/what/when/before/after/reason/source; retrievable in Audit viewer. |
 | AC-12 | Capacity reconciliation | Daily census vs bed-registry occupancy | Deltas reported; mismatch =0 or explicit explainable exceptions. |
-| AC-13 | Licensed-capacity integrity | `sum(bed is_licensed)` per unit | Equals unit `licensed_capacity`; else reconciliation flags it. |
-| AC-14 | Reporting correctness | Occupancy % on known unit | = occupied ÷ licensed_capacity; rolls up dept/facility correctly. |
+| AC-13 | Licensed-capacity integrity | `sum(bed is_licensed)` per inpatient unit | Equals unit `licensed_capacity` for `INPATIENT_LICENSED` only; OR/clinic/support have 0 licensed beds. |
+| AC-14 | Reporting correctness | Occupancy % on known inpatient unit | = occupied inpatient ÷ operational inpatient capacity; **not** occupied ÷ 515. ED/PACU on separate boards. |
 | AC-15 | Non-bedded support units | Open support unit occupancy | Not counted in bed capacity/occupancy; visible only to permitted roles. |
 | AC-16 | Data segregation / masking | Non-clinical role views census | Counts/occupancy only; no MRN/PII exposed. |
 | AC-17 | Effective-dated assignment | Manager transfer mid-period | Old assignment effective_to set; new begins; no history loss. |

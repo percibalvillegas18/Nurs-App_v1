@@ -29,21 +29,28 @@ CREATE TABLE unit_group (
     unit_group_id BIGSERIAL PRIMARY KEY,
     department_id BIGINT NOT NULL REFERENCES department(department_id),
     name          VARCHAR(200) NOT NULL,
-    care_setting  VARCHAR(40)  NOT NULL, -- INPATIENT_WARD / AMBULATORY_DIAGNOSTIC / BEDDED_SERVICE_LINE / NON_BEDDED_SUPPORT
+    care_setting  VARCHAR(40)  NOT NULL, -- INPATIENT_WARD / CRITICAL_CARE / EMERGENCY / PERIOPERATIVE / AMBULATORY / DIAGNOSTIC / SUPPORT
     status        VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE'
 );
 
 CREATE TABLE nursing_unit (
-    unit_id           BIGSERIAL PRIMARY KEY,
-    unit_code         VARCHAR(20)  NOT NULL UNIQUE,
-    department_id     BIGINT NOT NULL REFERENCES department(department_id),
-    unit_group_id     BIGINT REFERENCES unit_group(unit_group_id),
-    unit_name         VARCHAR(200) NOT NULL,
-    unit_type         VARCHAR(20)  NOT NULL, -- WARD/ICU/ED/OR/PACU/CLINIC/DIAGNOSTIC/SUPPORT/OTHER
-    care_setting      VARCHAR(40)  NOT NULL,
-    licensed_capacity INTEGER      NOT NULL DEFAULT 0 CHECK (licensed_capacity >= 0),
-    is_bedded         BOOLEAN      NOT NULL DEFAULT TRUE,
-    status            VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE'
+    unit_id            BIGSERIAL PRIMARY KEY,
+    unit_code          VARCHAR(20)  NOT NULL UNIQUE, -- W3A, ICU-MAIN, ED-RESUS, …
+    department_id      BIGINT NOT NULL REFERENCES department(department_id),
+    unit_group_id      BIGINT NOT NULL REFERENCES unit_group(unit_group_id),
+    unit_name          VARCHAR(200) NOT NULL,
+    unit_type          VARCHAR(20)  NOT NULL, -- WARD/SECURE_WARD/ICU/HDU/LDR/ED/UCC/OR/PACU/CLINIC/DIAGNOSTIC/PROCEDURE/THERAPY/SUPPORT
+    care_setting       VARCHAR(40)  NOT NULL,
+    capacity_class     VARCHAR(30)  NOT NULL, -- INPATIENT_LICENSED / ED_STRETCHER / PACU_BAY / OR_TABLE / PROCEDURE_ROOM / AMBULATORY_CHAIR / SUPPORT
+    source_bed_count   INTEGER CHECK (source_bed_count IS NULL OR source_bed_count >= 0),
+    resource_capacity  INTEGER      NOT NULL DEFAULT 0 CHECK (resource_capacity >= 0),
+    licensed_capacity  INTEGER      NOT NULL DEFAULT 0 CHECK (licensed_capacity >= 0), -- INPATIENT_LICENSED only; else 0
+    is_bedded          BOOLEAN      NOT NULL DEFAULT FALSE, -- patient-placeable (inpatient, ED stretcher, PACU)
+    dq_flag            VARCHAR(40),
+    effective_from     DATE,
+    effective_to       DATE,
+    status             VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE',
+    CHECK (licensed_capacity = 0 OR capacity_class = 'INPATIENT_LICENSED')
 );
 
 CREATE TABLE room (
@@ -65,7 +72,7 @@ CREATE TABLE bed (
     is_licensed   BOOLEAN NOT NULL DEFAULT TRUE,
     is_operative  BOOLEAN NOT NULL DEFAULT TRUE,
     bed_status    VARCHAR(20) NOT NULL DEFAULT 'READY',   -- READY/RESERVED/OCCUPIED/CLEANING/OUT_OF_SERVICE/BLOCKED
-    UNIQUE (unit_id, room_id, bed_number)
+    UNIQUE (unit_id, bed_number)
 );
 
 CREATE TABLE bed_state_log (
