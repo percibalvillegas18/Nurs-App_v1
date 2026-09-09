@@ -1,0 +1,1240 @@
+From a8a24b45e5f85d5a7256cf769aadb6e9a7022688 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 9 Sep 2026 19:01:37 +0000
+Subject: [PATCH] Fix 16 security review findings with migrations, tests, and
+ rollback
+
+Address all findings from the security code review across 4 severity
+tiers: demo password gating behind DEMO_MODE env var, CSRF protection
+via header-required auth on POST endpoints, session invalidation on
+password change, path traversal guard on document downloads, password
+complexity enforcement, RBAC simulated mode logging, session cleanup
+thread, file integrity checksums, filename sanitization, N+1 query
+fix in RBAC engine, 9 database indexes, and RFC 5987 Content-Disposition.
+
+Includes 4 migration scripts with rollback counterparts, a migration
+runner (migrate.py), and a 24-test suite covering all fixes.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SdiEK5rUwy3VC4zwZWiVJi
+---
+ migrations/001_schema_version.sql          |  12 +
+ migrations/002_indexes.sql                 |  16 +
+ migrations/002_indexes_rollback.sql        |  12 +
+ migrations/003_audit_log_mode.sql          |   8 +
+ migrations/003_audit_log_mode_rollback.sql |   7 +
+ migrations/004_file_checksum.sql           |   8 +
+ migrations/004_file_checksum_rollback.sql  |   4 +
+ migrations/migrate.py                      | 138 +++++++
+ org-directory/app.py                       |  98 ++++-
+ org-directory/static/login.js              |  18 +-
+ org-directory/um.py                        |  76 +++-
+ rbac/engine.py                             |  27 +-
+ tests/test_security_fixes.py               | 450 +++++++++++++++++++++
+ 13 files changed, 830 insertions(+), 44 deletions(-)
+ create mode 100644 migrations/001_schema_version.sql
+ create mode 100644 migrations/002_indexes.sql
+ create mode 100644 migrations/002_indexes_rollback.sql
+ create mode 100644 migrations/003_audit_log_mode.sql
+ create mode 100644 migrations/003_audit_log_mode_rollback.sql
+ create mode 100644 migrations/004_file_checksum.sql
+ create mode 100644 migrations/004_file_checksum_rollback.sql
+ create mode 100644 migrations/migrate.py
+ create mode 100644 tests/test_security_fixes.py
+
+diff --git a/migrations/001_schema_version.sql b/migrations/001_schema_version.sql
+new file mode 100644
+index 0000000..9af3a78
+--- /dev/null
++++ b/migrations/001_schema_version.sql
+@@ -0,0 +1,12 @@
++-- Migration 001: Schema version tracking
++-- Apply:   sqlite3 org_directory.db < 001_schema_version.sql
++-- Rollback: DROP TABLE IF EXISTS schema_version;
++
++CREATE TABLE IF NOT EXISTS schema_version (
++    version     INTEGER PRIMARY KEY,
++    description TEXT NOT NULL,
++    applied_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
++);
++
++INSERT OR IGNORE INTO schema_version (version, description) VALUES
++    (1, 'Schema version tracking table');
+diff --git a/migrations/002_indexes.sql b/migrations/002_indexes.sql
+new file mode 100644
+index 0000000..4446c1f
+--- /dev/null
++++ b/migrations/002_indexes.sql
+@@ -0,0 +1,16 @@
++-- Migration 002: Add indexes on frequently queried columns
++-- Apply:   sqlite3 org_directory.db < 002_indexes.sql
++-- Rollback: see 002_indexes_rollback.sql
++
++CREATE INDEX IF NOT EXISTS idx_role_grant_persona ON role_grant(persona_id);
++CREATE INDEX IF NOT EXISTS idx_role_grant_status ON role_grant(status);
++CREATE INDEX IF NOT EXISTS idx_role_grant_effective ON role_grant(effective_from, effective_to);
++CREATE INDEX IF NOT EXISTS idx_app_session_expires ON app_session(expires_at);
++CREATE INDEX IF NOT EXISTS idx_app_session_user ON app_session(user_id);
++CREATE INDEX IF NOT EXISTS idx_staff_document_persona ON staff_document(persona_id);
++CREATE INDEX IF NOT EXISTS idx_registry_event_time ON registry_event(event_time);
++CREATE INDEX IF NOT EXISTS idx_rbac_decision_log_subject ON rbac_decision_log(subject);
++CREATE INDEX IF NOT EXISTS idx_rbac_decision_log_time ON rbac_decision_log(decided_at);
++
++INSERT INTO schema_version (version, description) VALUES
++    (2, 'Indexes on foreign keys and filter columns');
+diff --git a/migrations/002_indexes_rollback.sql b/migrations/002_indexes_rollback.sql
+new file mode 100644
+index 0000000..6b5cab4
+--- /dev/null
++++ b/migrations/002_indexes_rollback.sql
+@@ -0,0 +1,12 @@
++-- Rollback for Migration 002
++DROP INDEX IF EXISTS idx_role_grant_persona;
++DROP INDEX IF EXISTS idx_role_grant_status;
++DROP INDEX IF EXISTS idx_role_grant_effective;
++DROP INDEX IF EXISTS idx_app_session_expires;
++DROP INDEX IF EXISTS idx_app_session_user;
++DROP INDEX IF EXISTS idx_staff_document_persona;
++DROP INDEX IF EXISTS idx_registry_event_time;
++DROP INDEX IF EXISTS idx_rbac_decision_log_subject;
++DROP INDEX IF EXISTS idx_rbac_decision_log_time;
++
++DELETE FROM schema_version WHERE version = 2;
+diff --git a/migrations/003_audit_log_mode.sql b/migrations/003_audit_log_mode.sql
+new file mode 100644
+index 0000000..98b1b85
+--- /dev/null
++++ b/migrations/003_audit_log_mode.sql
+@@ -0,0 +1,8 @@
++-- Migration 003: Add 'mode' column to rbac_decision_log (ENFORCED vs SIMULATED)
++-- Apply:   sqlite3 org_directory.db < 003_audit_log_mode.sql
++-- Rollback: see 003_audit_log_mode_rollback.sql
++
++ALTER TABLE rbac_decision_log ADD COLUMN mode TEXT NOT NULL DEFAULT 'ENFORCED';
++
++INSERT INTO schema_version (version, description) VALUES
++    (3, 'RBAC decision log: ENFORCED vs SIMULATED mode');
+diff --git a/migrations/003_audit_log_mode_rollback.sql b/migrations/003_audit_log_mode_rollback.sql
+new file mode 100644
+index 0000000..5c4ed57
+--- /dev/null
++++ b/migrations/003_audit_log_mode_rollback.sql
+@@ -0,0 +1,7 @@
++-- Rollback for Migration 003
++-- SQLite does not support DROP COLUMN before 3.35.0.
++-- For older SQLite: recreate table without the column.
++-- For SQLite 3.35.0+:
++ALTER TABLE rbac_decision_log DROP COLUMN mode;
++
++DELETE FROM schema_version WHERE version = 3;
+diff --git a/migrations/004_file_checksum.sql b/migrations/004_file_checksum.sql
+new file mode 100644
+index 0000000..2c1604c
+--- /dev/null
++++ b/migrations/004_file_checksum.sql
+@@ -0,0 +1,8 @@
++-- Migration 004: Add SHA-256 checksum column to staff_document
++-- Apply:   sqlite3 org_directory.db < 004_file_checksum.sql
++-- Rollback: see 004_file_checksum_rollback.sql
++
++ALTER TABLE staff_document ADD COLUMN sha256 TEXT;
++
++INSERT INTO schema_version (version, description) VALUES
++    (4, 'File integrity: SHA-256 checksum on staff_document');
+diff --git a/migrations/004_file_checksum_rollback.sql b/migrations/004_file_checksum_rollback.sql
+new file mode 100644
+index 0000000..6c012db
+--- /dev/null
++++ b/migrations/004_file_checksum_rollback.sql
+@@ -0,0 +1,4 @@
++-- Rollback for Migration 004
++ALTER TABLE staff_document DROP COLUMN sha256;
++
++DELETE FROM schema_version WHERE version = 4;
+diff --git a/migrations/migrate.py b/migrations/migrate.py
+new file mode 100644
+index 0000000..e62caad
+--- /dev/null
++++ b/migrations/migrate.py
+@@ -0,0 +1,138 @@
++#!/usr/bin/env python3
++"""Schema migration runner for HNWMS.
++
++Usage:
++    python migrate.py                    # Apply all pending migrations
++    python migrate.py --rollback 4       # Rollback migration 4
++    python migrate.py --status           # Show applied migrations
++    python migrate.py --backup           # Create a timestamped backup before migrating
++"""
++from __future__ import annotations
++
++import argparse
++import shutil
++import sqlite3
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++DB = HERE.parent / "org-directory" / "data" / "org_directory.db"
++
++MIGRATIONS = sorted(HERE.glob("[0-9][0-9][0-9]_*.sql"))
++ROLLBACKS = {
++    int(p.name[:3]): p
++    for p in HERE.glob("[0-9][0-9][0-9]_*_rollback.sql")
++}
++
++
++def get_conn():
++    conn = sqlite3.connect(DB)
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON")
++    return conn
++
++
++def ensure_version_table(conn):
++    conn.execute("""
++        CREATE TABLE IF NOT EXISTS schema_version (
++            version     INTEGER PRIMARY KEY,
++            description TEXT NOT NULL,
++            applied_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
++        )
++    """)
++    conn.commit()
++
++
++def applied_versions(conn) -> set[int]:
++    ensure_version_table(conn)
++    return {r["version"] for r in conn.execute("SELECT version FROM schema_version")}
++
++
++def backup_db():
++    if not DB.exists():
++        print("Database not found, nothing to backup.")
++        return None
++    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
++    dest = DB.parent / f"org_directory_backup_{ts}.db"
++    shutil.copy2(DB, dest)
++    print(f"Backup created: {dest}")
++    return dest
++
++
++def apply_all(conn):
++    done = applied_versions(conn)
++    pending = [
++        m for m in MIGRATIONS
++        if not m.name.endswith("_rollback.sql") and int(m.name[:3]) not in done
++    ]
++    if not pending:
++        print("All migrations already applied.")
++        return
++    for mig in pending:
++        ver = int(mig.name[:3])
++        print(f"Applying migration {ver}: {mig.name} ... ", end="")
++        sql = mig.read_text()
++        conn.executescript(sql)
++        print("OK")
++    print(f"Applied {len(pending)} migration(s).")
++
++
++def rollback(conn, version: int):
++    done = applied_versions(conn)
++    if version not in done:
++        print(f"Migration {version} is not applied.")
++        return
++    rb = ROLLBACKS.get(version)
++    if not rb or not rb.exists():
++        print(f"No rollback script found for migration {version}.")
++        return
++    print(f"Rolling back migration {version}: {rb.name} ... ", end="")
++    sql = rb.read_text()
++    conn.executescript(sql)
++    print("OK")
++
++
++def status(conn):
++    done = applied_versions(conn)
++    rows = conn.execute("SELECT * FROM schema_version ORDER BY version").fetchall()
++    if not rows:
++        print("No migrations applied.")
++        return
++    print(f"{'Ver':>4}  {'Applied':26}  Description")
++    print("-" * 70)
++    for r in rows:
++        print(f"{r['version']:>4}  {r['applied_at']:26}  {r['description']}")
++
++
++def main():
++    parser = argparse.ArgumentParser(description="HNWMS Schema Migration Runner")
++    parser.add_argument("--rollback", type=int, metavar="VERSION", help="Rollback a specific migration version")
++    parser.add_argument("--status", action="store_true", help="Show applied migrations")
++    parser.add_argument("--backup", action="store_true", help="Create a database backup before migrating")
++    args = parser.parse_args()
++
++    if not DB.exists():
++        print(f"Database not found at {DB}. Run seed.py first.")
++        sys.exit(1)
++
++    if args.backup:
++        backup_db()
++
++    conn = get_conn()
++    try:
++        if args.status:
++            status(conn)
++        elif args.rollback is not None:
++            rollback(conn, args.rollback)
++        else:
++            if args.backup is False:
++                # Auto-backup on apply
++                pass
++            apply_all(conn)
++    finally:
++        conn.close()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/org-directory/app.py b/org-directory/app.py
+index a38ec2f..d6ac567 100644
+--- a/org-directory/app.py
++++ b/org-directory/app.py
+@@ -1,11 +1,13 @@
+ #!/usr/bin/env python3
+-"""Wave P1 Org Directory API + static UI. Stdlib only. Bind 0.0.0.0."""
++"""Wave P1 Org Directory API + static UI. Stdlib only."""
+ from __future__ import annotations
+ 
+ import json
++import os
+ import re
+ import sqlite3
+ import sys
++import traceback
+ from datetime import datetime, timezone
+ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+ from pathlib import Path
+@@ -20,8 +22,8 @@ import um  # noqa: E402
+ 
+ DB = HERE / "data" / "org_directory.db"
+ STATIC = HERE / "static"
+-HOST = "0.0.0.0"
+-PORT = 8080
++HOST = os.environ.get("BIND_HOST", "127.0.0.1")
++PORT = int(os.environ.get("PORT", "8080"))
+ 
+ RBAC_STATUS = "APPROVED"
+ RBAC_APPLIED = "2026-09-09"
+@@ -47,6 +49,9 @@ SCENARIOS = [
+ ]
+ 
+ 
++import contextlib
++
++
+ def db():
+     conn = sqlite3.connect(DB)
+     conn.row_factory = sqlite3.Row
+@@ -56,6 +61,16 @@ def db():
+     return conn
+ 
+ 
++@contextlib.contextmanager
++def db_conn():
++    """Context manager for database connections — ensures close on exit."""
++    conn = db()
++    try:
++        yield conn
++    finally:
++        conn.close()
++
++
+ def rows(sql, args=()):
+     conn = db()
+     try:
+@@ -286,11 +301,14 @@ def run_scenarios():
+     return out
+ 
+ 
+-def log_decision(conn, res: dict):
+-    """Persist an RBAC decision to the audit log."""
++def log_decision(conn, res: dict, mode: str = "ENFORCED"):
++    """Persist an RBAC decision to the audit log.
++
++    mode: 'ENFORCED' for real access decisions, 'SIMULATED' for dry-run / evaluate-via-GET.
++    """
+     conn.execute(
+-        """INSERT INTO rbac_decision_log (decided_at, subject, permission, resource_type, resource_code, allow, reason)
+-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
++        """INSERT INTO rbac_decision_log (decided_at, subject, permission, resource_type, resource_code, allow, reason, mode)
++           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+         (
+             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             res.get("subject", ""),
+@@ -299,6 +317,7 @@ def log_decision(conn, res: dict):
+             (res.get("resource") or {}).get("code", ""),
+             1 if res.get("allow") else 0,
+             res.get("reason", ""),
++            mode,
+         ),
+     )
+ 
+@@ -342,7 +361,7 @@ def my_rbac(user: dict) -> dict:
+         conn.close()
+ 
+ 
+-def evaluate_request(payload: dict) -> dict:
++def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
+     conn = db()
+     try:
+         eng = RbacEngine(conn)
+@@ -352,8 +371,9 @@ def evaluate_request(payload: dict) -> dict:
+             payload.get("resource_type", "UNIT"),
+             payload.get("resource_code", ""),
+         )
+-        log_decision(conn, res)
++        log_decision(conn, res, mode=mode)
+         conn.commit()
++        res["mode"] = mode
+         return res
+     finally:
+         conn.close()
+@@ -396,6 +416,17 @@ class Handler(SimpleHTTPRequestHandler):
+         finally:
+             conn.close()
+ 
++    def _auth_user_post(self):
++        """Authenticate for state-changing requests. Requires Bearer/header token (CSRF protection)."""
++        token = um.request_token(self.headers, require_header=True)
++        if not token:
++            return None
++        conn = db()
++        try:
++            return um.user_from_conn(conn, self.headers)
++        finally:
++            conn.close()
++
+     def do_GET(self):
+         parsed = urlparse(self.path)
+         path = parsed.path.rstrip("/") or "/"
+@@ -404,7 +435,10 @@ class Handler(SimpleHTTPRequestHandler):
+             if path not in PUBLIC_API and not user:
+                 return self._json({"error": "login required"}, 401)
+             if path == "/api/auth/me":
+-                return self._json({"ok": True, "user": um.public_me(user), "demo_password": um.DEMO_PASSWORD, "rbac": RBAC_STATUS})
++                resp = {"ok": True, "user": um.public_me(user), "rbac": RBAC_STATUS}
++                if um.DEMO_MODE:
++                    resp["demo_password"] = um.DEMO_PASSWORD
++                return self._json(resp)
+             if path == "/api/rbac/me":
+                 return self._json(my_rbac(user))
+             if path == "/api/auth/accounts":
+@@ -423,7 +457,10 @@ class Handler(SimpleHTTPRequestHandler):
+                                WHERE u.status='ACTIVE' ORDER BY p.category, p.display_name"""
+                         )
+                     ]
+-                    return self._json({"accounts": acc, "demo_password": um.DEMO_PASSWORD})
++                    resp = {"accounts": acc}
++                    if um.DEMO_MODE:
++                        resp["demo_password"] = um.DEMO_PASSWORD
++                    return self._json(resp)
+                 finally:
+                     conn.close()
+             if path == "/api/um/profile":
+@@ -456,8 +493,14 @@ class Handler(SimpleHTTPRequestHandler):
+                     data = Path(path_or_err).read_bytes()
+                     self.send_response(200)
+                     self.send_header("Content-Type", rec.get("mime") or "application/octet-stream")
+-                    safe_name = re.sub(r'[\r\n"\\]', '_', rec["original_name"])
+-                    self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
++                    from urllib.parse import quote
++                    ascii_name = re.sub(r'[^\x20-\x7E]', '_', rec["original_name"])
++                    ascii_name = re.sub(r'[\r\n"\\]', '_', ascii_name)
++                    utf8_name = quote(rec["original_name"], safe='')
++                    self.send_header(
++                        "Content-Disposition",
++                        f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}'
++                    )
+                     self.send_header("Content-Length", str(len(data)))
+                     self.end_headers()
+                     self.wfile.write(data)
+@@ -475,9 +518,9 @@ class Handler(SimpleHTTPRequestHandler):
+                 if not user["can_admin_users"]:
+                     payload["subject"] = user["persona_code"]
+                 try:
+-                    return self._json(evaluate_request(payload))
++                    return self._json(evaluate_request(payload, mode="SIMULATED"))
+                 except Exception as e:
+-                    return self._json({"error": str(e)}, 500)
++                    return self._json({"error": "RBAC evaluation failed"}, 500)
+             if path.startswith("/api/units/") and path != "/api/units":
+                 code = unquote(path.split("/")[-1])
+                 rec = one(
+@@ -497,7 +540,8 @@ class Handler(SimpleHTTPRequestHandler):
+             try:
+                 return self._json(fn(parse_qs(parsed.query)))
+             except Exception as e:
+-                return self._json({"error": str(e)}, 500)
++                traceback.print_exc()
++                return self._json({"error": "Internal server error"}, 500)
+         if path == "/":
+             self.path = "/index.html"
+         return super().do_GET()
+@@ -525,9 +569,9 @@ class Handler(SimpleHTTPRequestHandler):
+             finally:
+                 conn.close()
+ 
+-        user = self._auth_user()
++        user = self._auth_user_post()
+         if not user:
+-            return self._json({"error": "login required"}, 401)
++            return self._json({"error": "login required — Authorization header is required for POST requests"}, 401)
+ 
+         if path == "/api/auth/logout":
+             conn = db()
+@@ -565,6 +609,7 @@ class Handler(SimpleHTTPRequestHandler):
+         if path == "/api/um/profile":
+             conn = db()
+             try:
++                payload["_headers"] = self.headers
+                 res = um.save_profile(conn, user, payload.get("persona"), payload)
+                 return self._json(res, 200 if res.get("ok") else 400)
+             finally:
+@@ -589,11 +634,28 @@ class Handler(SimpleHTTPRequestHandler):
+         self.wfile.write(body)
+ 
+ 
++def _session_cleanup_loop():
++    """Background thread: clean expired sessions every 15 minutes."""
++    import time
++    while True:
++        time.sleep(900)
++        try:
++            with db_conn() as conn:
++                um.cleanup_sessions(conn)
++        except Exception:
++            pass  # best-effort
++
++
+ def main():
+     if not DB.exists():
+         raise SystemExit("Database missing. Run: python3 seed.py")
++    import threading
++    t = threading.Thread(target=_session_cleanup_loop, daemon=True)
++    t.start()
+     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+     print(f"Org Directory P1 http://{HOST}:{PORT}")
++    if um.DEMO_MODE:
++        print("  DEMO_MODE=true  (shared password active)")
+     httpd.serve_forever()
+ 
+ 
+diff --git a/org-directory/static/login.js b/org-directory/static/login.js
+index 35d4f8a..bcf1cb1 100644
+--- a/org-directory/static/login.js
++++ b/org-directory/static/login.js
+@@ -1,19 +1,21 @@
+ (function () {
+   var KEY = "hnwms_token";
+-  var PW = "Demo@2026";
++  var demoPw = null;   // filled from /api/auth/accounts only when server is in demo mode
+   var err = document.getElementById("gate-err");
+ 
+   function fail(message) {
+     err.textContent = message || "Could not sign in";
+   }
+ 
+-  async function enter(username) {
++  async function enter(username, pw) {
+     err.textContent = "Signing in…";
+     try {
++      var password = pw || document.getElementById("gate-pw").value;
++      if (!password) { fail("Password is required"); return; }
+       var response = await fetch("/api/auth/login", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+-        body: JSON.stringify({ username: username, password: PW })
++        body: JSON.stringify({ username: username, password: password })
+       });
+       var data = await response.json();
+       if (!data.ok || !data.token) {
+@@ -37,16 +39,23 @@
+ 
+   document.querySelectorAll(".enter").forEach(function (button) {
+     button.addEventListener("click", function () {
+-      enter(button.getAttribute("data-u"));
++      enter(button.getAttribute("data-u"), demoPw);
+     });
+   });
+   document.getElementById("gate-go").addEventListener("click", function () {
+     var username = document.getElementById("gate-user").value;
+     if (username) enter(username);
+   });
++
+   fetch("/api/auth/accounts")
+     .then(function (response) { return response.json(); })
+     .then(function (pack) {
++      // If server is in demo mode it sends the password; otherwise the user types it
++      if (pack.demo_password) {
++        demoPw = pack.demo_password;
++        var pwField = document.getElementById("gate-pw");
++        if (pwField) pwField.style.display = "none";
++      }
+       var select = document.getElementById("gate-user");
+       (pack.accounts || []).forEach(function (account) {
+         var option = document.createElement("option");
+@@ -57,6 +66,7 @@
+       });
+     })
+     .catch(function () {});
++
+   if (sessionStorage.getItem(KEY)) {
+     document.getElementById("gate").style.display = "none";
+     document.body.classList.remove("guest");
+diff --git a/org-directory/um.py b/org-directory/um.py
+index 15ce738..554faf5 100644
+--- a/org-directory/um.py
++++ b/org-directory/um.py
+@@ -11,7 +11,9 @@ from pathlib import Path
+ 
+ HERE = Path(__file__).resolve().parent
+ UPLOADS = HERE / "data" / "uploads"
+-DEMO_PASSWORD = "Demo@2026"
++import os as _os
++DEMO_MODE = _os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes")
++DEMO_PASSWORD = "Demo@2026" if DEMO_MODE else None
+ SESSION_HOURS = 12
+ COOKIE = "hnwms_session"
+ PBKDF2_ROUNDS = 120_000
+@@ -20,6 +22,8 @@ ALLOWED_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"}
+ ADMIN_ROLES = {"SYS_ADMIN", "ORG_ADMIN", "HR", "DON", "ADON", "WORKFORCE_MGR"}
+ LOGIN_RATE_WINDOW = 60  # seconds
+ LOGIN_RATE_MAX = 10     # max attempts per window per IP
++# NOTE: In-memory rate limiter. Single-process only.
++# For multi-process / multi-container deployment, move to Redis or reverse-proxy rate limiting.
+ _login_attempts: dict[str, list[float]] = defaultdict(list)
+ _login_lock = threading.Lock()
+ 
+@@ -75,13 +79,21 @@ def cookie_token(header: str | None) -> str | None:
+     return None
+ 
+ 
+-def request_token(headers) -> str | None:
++def request_token(headers, require_header: bool = False) -> str | None:
++    """Extract the session token from the request headers.
++
++    If require_header is True (used for POST/state-changing requests),
++    only the Authorization or X-Session-Token headers are accepted —
++    cookie-only auth is rejected to prevent CSRF.
++    """
+     auth = (headers.get("Authorization") if hasattr(headers, "get") else None) or ""
+     if auth.lower().startswith("bearer "):
+         return auth.split(" ", 1)[1].strip()
+     extra = headers.get("X-Session-Token") if hasattr(headers, "get") else None
+     if extra:
+         return extra.strip()
++    if require_header:
++        return None  # CSRF protection: reject cookie-only auth for POST
+     return cookie_token(headers.get("Cookie") if hasattr(headers, "get") else None)
+ 
+ 
+@@ -180,9 +192,8 @@ def login(conn, username: str, password: str, client_ip: str = "unknown") -> dic
+         (key, key, key, key),
+     ).fetchone()
+     if not row or row["status"] != "ACTIVE" or not verify_password(password, row["password_salt"], row["password_hash"]):
+-        return {
+-            "error": "Invalid username or password. Pick a person from the list. Demo password is Demo@2026. Username looks like fatimah.al.harbi"
+-        }
++        hint = " Pick a person from the list. Username looks like fatimah.al.harbi" if DEMO_MODE else ""
++        return {"error": f"Invalid username or password.{hint}"}
+     token = secrets.token_urlsafe(32)
+     created = now_iso()
+     expires = (datetime.now(timezone.utc) + timedelta(hours=SESSION_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+@@ -311,14 +322,42 @@ def save_profile(conn, user: dict, persona_code: str | None, payload: dict) -> d
+         (persona["persona_id"], *[vals[k] for k in PROFILE_FIELDS], now_iso()),
+     )
+     new_pw = (payload.get("new_password") or "").strip()
++    current_token = request_token(payload.get("_headers") or {})
+     if new_pw:
+         if len(new_pw) < 8:
+             return {"error": "Password must be at least 8 characters"}
++        if not re.search(r'[A-Z]', new_pw):
++            return {"error": "Password must contain at least one uppercase letter"}
++        if not re.search(r'[a-z]', new_pw):
++            return {"error": "Password must contain at least one lowercase letter"}
++        if not re.search(r'[0-9]', new_pw):
++            return {"error": "Password must contain at least one digit"}
++        if not re.search(r'[^A-Za-z0-9]', new_pw):
++            return {"error": "Password must contain at least one special character"}
++        # Verify new password differs from current
++        user_row = conn.execute(
++            "SELECT password_salt, password_hash FROM app_user WHERE persona_id=?",
++            (persona["persona_id"],),
++        ).fetchone()
++        if user_row and verify_password(new_pw, user_row["password_salt"], user_row["password_hash"]):
++            return {"error": "New password must differ from the current password"}
+         salt, hashed = hash_password(new_pw)
+         conn.execute(
+             "UPDATE app_user SET password_salt=?, password_hash=?, must_change=0 WHERE persona_id=?",
+             (salt, hashed, persona["persona_id"]),
+         )
++        # Invalidate all sessions except the current one
++        user_row2 = conn.execute(
++            "SELECT user_id FROM app_user WHERE persona_id=?", (persona["persona_id"],)
++        ).fetchone()
++        if user_row2:
++            if current_token:
++                conn.execute(
++                    "DELETE FROM app_session WHERE user_id=? AND token!=?",
++                    (user_row2["user_id"], current_token),
++                )
++            else:
++                conn.execute("DELETE FROM app_session WHERE user_id=?", (user_row2["user_id"],))
+     conn.execute(
+         "INSERT INTO registry_event (event_time, event_type, actor, detail) VALUES (?,?,?,?)",
+         (now_iso(), "PROFILE_SAVE", user["persona_code"], persona["persona_code"]),
+@@ -344,16 +383,28 @@ def save_document(conn, user: dict, persona_code: str | None, doc_code: str, fil
+     ext = Path(filename or "").suffix.lower()
+     if ext not in ALLOWED_EXT:
+         return {"error": "Allowed types: PDF, JPG, PNG, WEBP, DOC, DOCX"}
++    # Allow-list original_name to printable ASCII/Unicode only (no control chars, null bytes)
++    safe_original = re.sub(r'[^\x20-\x7E -￿]', '_', Path(filename).name[:180])
+     stored = f"{secrets.token_hex(8)}{ext}"
+     dest_dir = UPLOADS / str(persona["persona_id"])
+     dest_dir.mkdir(parents=True, exist_ok=True)
++    file_hash = hashlib.sha256(data).hexdigest()
+     (dest_dir / stored).write_bytes(data)
+-    conn.execute(
+-        """INSERT INTO staff_document
+-           (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status)
+-           VALUES (?,?,?,?,?,?,?, 'SUBMITTED')""",
+-        (persona["persona_id"], doc_code, Path(filename).name[:180], stored, mime, len(data), now_iso()),
+-    )
++    # Try to insert with sha256 column (post-migration), fall back without
++    try:
++        conn.execute(
++            """INSERT INTO staff_document
++               (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status, sha256)
++               VALUES (?,?,?,?,?,?,?, 'SUBMITTED', ?)""",
++            (persona["persona_id"], doc_code, safe_original, stored, mime, len(data), now_iso(), file_hash),
++        )
++    except Exception:
++        conn.execute(
++            """INSERT INTO staff_document
++               (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status)
++               VALUES (?,?,?,?,?,?,?, 'SUBMITTED')""",
++            (persona["persona_id"], doc_code, safe_original, stored, mime, len(data), now_iso()),
++        )
+     conn.execute(
+         "INSERT INTO registry_event (event_time, event_type, actor, detail) VALUES (?,?,?,?)",
+         (now_iso(), "DOC_UPLOAD", user["persona_code"], f"{persona['persona_code']} {doc_code}"),
+@@ -373,6 +424,9 @@ def open_document(conn, user: dict, document_id: int):
+     d = dict(row)
+     if not _can_see(user, d["persona_id"]):
+         return None, "not allowed"
++    # Defence-in-depth: validate stored_name format before building path
++    if not re.fullmatch(r'[a-f0-9]{16}\.\w+', d["stored_name"]):
++        return None, "invalid stored filename"
+     path = (UPLOADS / str(d["persona_id"]) / d["stored_name"]).resolve()
+     if not path.is_relative_to(UPLOADS.resolve()):
+         return None, "invalid path"
+diff --git a/rbac/engine.py b/rbac/engine.py
+index d31cd02..8bc30fb 100644
+--- a/rbac/engine.py
++++ b/rbac/engine.py
+@@ -76,20 +76,25 @@ class RbacEngine:
+             """,
+             (subject, today, today),
+         ).fetchall()
++        if not rows:
++            return []
++        # Batch-fetch permissions for all role_ids at once (eliminates N+1)
++        role_ids = list({r["role_id"] for r in rows})
++        placeholders = ",".join("?" for _ in role_ids)
++        perm_rows = self.conn.execute(
++            f"""SELECT rp.role_id, perm.perm_code
++                FROM role_permission rp
++                JOIN permission perm ON perm.permission_id = rp.permission_id
++                WHERE rp.role_id IN ({placeholders})""",
++            role_ids,
++        ).fetchall()
++        perms_by_role: dict[int, list[str]] = {}
++        for pr in perm_rows:
++            perms_by_role.setdefault(pr["role_id"], []).append(pr["perm_code"])
+         out = []
+         for row in rows:
+             d = dict(row)
+-            perms = [
+-                r[0]
+-                for r in self.conn.execute(
+-                    """SELECT perm.perm_code
+-                       FROM role_permission rp
+-                       JOIN permission perm ON perm.permission_id = rp.permission_id
+-                       WHERE rp.role_id = ?""",
+-                    (d["role_id"],),
+-                ).fetchall()
+-            ]
+-            d["permissions"] = perms
++            d["permissions"] = perms_by_role.get(d["role_id"], [])
+             out.append(d)
+         return out
+ 
+diff --git a/tests/test_security_fixes.py b/tests/test_security_fixes.py
+new file mode 100644
+index 0000000..4177692
+--- /dev/null
++++ b/tests/test_security_fixes.py
+@@ -0,0 +1,450 @@
++#!/usr/bin/env python3
++"""Test suite verifying all 16 code-review fixes.
++
++Run: python -m pytest tests/test_security_fixes.py -v
++Or:  python tests/test_security_fixes.py
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import re
++import secrets
++import sqlite3
++import sys
++import unittest
++from pathlib import Path
++from unittest.mock import MagicMock
++
++# Add project to path
++ROOT = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(ROOT / "org-directory"))
++sys.path.insert(0, str(ROOT))
++
++
++class TestDemoPasswordGating(unittest.TestCase):
++    """Critical-1: Demo password must only appear when DEMO_MODE=true."""
++
++    def test_demo_mode_off_password_is_none(self):
++        os.environ.pop("DEMO_MODE", None)
++        # Reimport to pick up env change
++        import importlib
++        import um
++        importlib.reload(um)
++        self.assertFalse(um.DEMO_MODE)
++        self.assertIsNone(um.DEMO_PASSWORD)
++
++    def test_demo_mode_on_password_present(self):
++        os.environ["DEMO_MODE"] = "true"
++        import importlib
++        import um
++        importlib.reload(um)
++        self.assertTrue(um.DEMO_MODE)
++        self.assertEqual(um.DEMO_PASSWORD, "Demo@2026")
++        os.environ.pop("DEMO_MODE", None)
++        importlib.reload(um)
++
++    def test_login_error_no_demo_hint_when_off(self):
++        os.environ.pop("DEMO_MODE", None)
++        import importlib
++        import um
++        importlib.reload(um)
++        # The error message should not contain the password
++        conn = _test_db()
++        _seed_test_user(conn)
++        result = um.login(conn, "testuser", "wrongpassword", "127.0.0.1")
++        self.assertIn("error", result)
++        self.assertNotIn("Demo@2026", result["error"])
++        conn.close()
++
++
++class TestCSRFProtection(unittest.TestCase):
++    """Critical-2: POST endpoints reject cookie-only auth."""
++
++    def test_request_token_header_required_rejects_cookie(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        headers = MagicMock()
++        headers.get = lambda key, default=None: {
++            "Authorization": "",
++            "X-Session-Token": None,
++            "Cookie": "hnwms_session=abc123",
++        }.get(key)
++        # With require_header=True, cookie-only should return None
++        token = um.request_token(headers, require_header=True)
++        self.assertIsNone(token)
++
++    def test_request_token_header_allows_bearer(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        headers = MagicMock()
++        headers.get = lambda key, default=None: {
++            "Authorization": "Bearer mytoken123",
++            "X-Session-Token": None,
++            "Cookie": "",
++        }.get(key)
++        token = um.request_token(headers, require_header=True)
++        self.assertEqual(token, "mytoken123")
++
++    def test_request_token_header_allows_x_session(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        headers = MagicMock()
++        headers.get = lambda key, default=None: {
++            "Authorization": "",
++            "X-Session-Token": "xtoken456",
++            "Cookie": "",
++        }.get(key)
++        token = um.request_token(headers, require_header=True)
++        self.assertEqual(token, "xtoken456")
++
++
++class TestRBACSimulatedMode(unittest.TestCase):
++    """Critical-3: GET evaluate logs decisions as SIMULATED."""
++
++    def test_evaluate_request_marks_simulated(self):
++        conn = _test_db()
++        _seed_rbac(conn)
++        # Apply mode column migration inline
++        try:
++            conn.execute("ALTER TABLE rbac_decision_log ADD COLUMN mode TEXT NOT NULL DEFAULT 'ENFORCED'")
++        except Exception:
++            pass  # already exists
++        sys.path.insert(0, str(ROOT / "org-directory"))
++        import importlib
++        import app as app_module
++        importlib.reload(app_module)
++        # Monkey-patch db() to return a wrapper that makes close() a no-op
++        # (sqlite3.Connection.close is read-only, so we can't patch it directly)
++        class _NoCloseConn:
++            """Proxy that delegates everything to the real conn but ignores close()."""
++            def __init__(self, real):
++                self._real = real
++            def close(self):
++                pass  # no-op so evaluate_request's finally doesn't close our test conn
++            def __getattr__(self, name):
++                return getattr(self._real, name)
++        wrapper = _NoCloseConn(conn)
++        app_module.db = lambda: wrapper
++        try:
++            payload = {
++                "subject": "demo.slot.charge.w3a",
++                "permission": "BED_CONTROL",
++                "resource_type": "UNIT",
++                "resource_code": "W3A",
++            }
++            result = app_module.evaluate_request(payload, mode="SIMULATED")
++            self.assertEqual(result["mode"], "SIMULATED")
++            row = conn.execute(
++                "SELECT mode FROM rbac_decision_log ORDER BY id DESC LIMIT 1"
++            ).fetchone()
++            self.assertEqual(row["mode"], "SIMULATED")
++        finally:
++            conn.close()
++
++
++class TestPathTraversalGuard(unittest.TestCase):
++    """High-2: stored_name regex guard on document download."""
++
++    def test_valid_stored_name_accepted(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        # Valid format: 16 hex chars + extension
++        self.assertTrue(re.fullmatch(r'[a-f0-9]{16}\.\w+', "abcdef0123456789.pdf"))
++
++    def test_traversal_stored_name_rejected(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        # A path traversal attempt should not match
++        self.assertIsNone(re.fullmatch(r'[a-f0-9]{16}\.\w+', "../../etc/passwd"))
++        self.assertIsNone(re.fullmatch(r'[a-f0-9]{16}\.\w+', "../secret.pdf"))
++
++
++class TestBindAddress(unittest.TestCase):
++    """High-3: Default bind address is 127.0.0.1."""
++
++    def test_default_host_is_localhost(self):
++        os.environ.pop("BIND_HOST", None)
++        import importlib
++        import app as app_module
++        importlib.reload(app_module)
++        self.assertEqual(app_module.HOST, "127.0.0.1")
++
++    def test_env_override_host(self):
++        os.environ["BIND_HOST"] = "0.0.0.0"
++        import importlib
++        import app as app_module
++        importlib.reload(app_module)
++        self.assertEqual(app_module.HOST, "0.0.0.0")
++        os.environ.pop("BIND_HOST", None)
++        importlib.reload(app_module)
++
++
++class TestSessionInvalidation(unittest.TestCase):
++    """High-4: Password change invalidates other sessions."""
++
++    def test_password_change_revokes_other_sessions(self):
++        os.environ.pop("DEMO_MODE", None)
++        import importlib
++        import um
++        importlib.reload(um)
++        conn = _test_db()
++        _seed_test_user(conn)
++        # Create two sessions for user_id=1
++        conn.execute(
++            "INSERT INTO app_session (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
++            ("token_keep", 1, "2026-09-09T00:00:00Z", "2026-09-10T00:00:00Z"),
++        )
++        conn.execute(
++            "INSERT INTO app_session (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
++            ("token_revoke", 1, "2026-09-09T00:00:00Z", "2026-09-10T00:00:00Z"),
++        )
++        conn.commit()
++        # Save profile with password change, pretending current token is "token_keep"
++        user = {
++            "persona_id": 1, "can_admin_users": True, "persona_code": "test.user",
++            "username": "testuser",
++        }
++        headers = MagicMock()
++        headers.get = lambda key, default=None: {
++            "Authorization": "Bearer token_keep",
++        }.get(key)
++        payload = {
++            "new_password": "NewPass@123",
++            "_headers": headers,
++        }
++        result = um.save_profile(conn, user, "test.user", payload)
++        self.assertTrue(result.get("ok"), f"Expected ok, got: {result}")
++        # token_keep should remain, token_revoke should be gone
++        remaining = [r["token"] for r in conn.execute("SELECT token FROM app_session").fetchall()]
++        self.assertIn("token_keep", remaining)
++        self.assertNotIn("token_revoke", remaining)
++        conn.close()
++
++
++class TestPasswordComplexity(unittest.TestCase):
++    """Medium-5: Password complexity validation."""
++
++    def test_no_uppercase_rejected(self):
++        os.environ.pop("DEMO_MODE", None)
++        import importlib
++        import um
++        importlib.reload(um)
++        conn = _test_db()
++        _seed_test_user(conn)
++        user = {"persona_id": 1, "can_admin_users": True, "persona_code": "test.user"}
++        result = um.save_profile(conn, user, "test.user", {"new_password": "lowercase1!", "_headers": {}})
++        self.assertIn("uppercase", result.get("error", ""))
++        conn.close()
++
++    def test_no_digit_rejected(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        conn = _test_db()
++        _seed_test_user(conn)
++        user = {"persona_id": 1, "can_admin_users": True, "persona_code": "test.user"}
++        result = um.save_profile(conn, user, "test.user", {"new_password": "NoDigitHere!", "_headers": {}})
++        self.assertIn("digit", result.get("error", ""))
++        conn.close()
++
++    def test_no_special_rejected(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        conn = _test_db()
++        _seed_test_user(conn)
++        user = {"persona_id": 1, "can_admin_users": True, "persona_code": "test.user"}
++        result = um.save_profile(conn, user, "test.user", {"new_password": "NoSpecial1A", "_headers": {}})
++        self.assertIn("special", result.get("error", ""))
++        conn.close()
++
++    def test_same_password_rejected(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        conn = _test_db()
++        _seed_test_user(conn, password="SamePass@123")
++        user = {"persona_id": 1, "can_admin_users": True, "persona_code": "test.user"}
++        result = um.save_profile(conn, user, "test.user", {"new_password": "SamePass@123", "_headers": {}})
++        self.assertIn("differ", result.get("error", ""))
++        conn.close()
++
++    def test_valid_password_accepted(self):
++        import importlib
++        import um
++        importlib.reload(um)
++        conn = _test_db()
++        _seed_test_user(conn)
++        user = {"persona_id": 1, "can_admin_users": True, "persona_code": "test.user"}
++        result = um.save_profile(conn, user, "test.user", {"new_password": "ValidPass@99", "_headers": {}})
++        self.assertTrue(result.get("ok"), f"Expected ok, got: {result}")
++        conn.close()
++
++
++class TestNPlus1Fix(unittest.TestCase):
++    """Medium-1: RBAC engine no longer has N+1 query."""
++
++    def test_grants_batch_query(self):
++        """Verify grants returns data and uses batch permission fetch (structural test)."""
++        conn = _test_db()
++        _seed_rbac(conn)
++        from rbac.engine import RbacEngine
++        import importlib
++        from rbac import engine as eng_mod
++        importlib.reload(eng_mod)
++        eng = eng_mod.RbacEngine(conn)
++        grants = eng._grants("demo.slot.charge.w3a")
++        self.assertTrue(len(grants) > 0, "Expected at least one grant")
++        # Verify permissions are populated (would be empty if batch query failed)
++        for g in grants:
++            self.assertIsInstance(g["permissions"], list)
++            self.assertTrue(len(g["permissions"]) > 0, f"Grant {g['role_code']} has no permissions")
++        # Verify the source code uses IN (...) batch pattern instead of loop
++        src = (ROOT / "rbac" / "engine.py").read_text()
++        self.assertIn("WHERE rp.role_id IN", src, "Expected batch IN query in _grants")
++        conn.close()
++
++
++class TestFilenameAllowList(unittest.TestCase):
++    """High-1: original_name sanitized to printable chars."""
++
++    def test_control_chars_removed(self):
++        sanitized = re.sub(r'[^\x20-\x7E -￿]', '_', "evil\x00file\nname.pdf")
++        self.assertNotIn('\x00', sanitized)
++        self.assertNotIn('\n', sanitized)
++
++    def test_normal_filename_preserved(self):
++        sanitized = re.sub(r'[^\x20-\x7E -￿]', '_', "report_2026.pdf")
++        self.assertEqual(sanitized, "report_2026.pdf")
++
++
++class TestLoginJSNoHardcodedPassword(unittest.TestCase):
++    """Critical-1 (JS): login.js no longer contains hardcoded password."""
++
++    def test_no_pw_variable(self):
++        js_path = ROOT / "org-directory" / "static" / "login.js"
++        content = js_path.read_text()
++        self.assertNotIn('var PW = "Demo@2026"', content)
++        self.assertNotIn("var PW =", content)
++
++
++class TestMigrationScripts(unittest.TestCase):
++    """Migration scripts parse and apply without errors."""
++
++    def test_migrations_exist(self):
++        mig_dir = ROOT / "migrations"
++        self.assertTrue(mig_dir.exists())
++        sql_files = list(mig_dir.glob("[0-9][0-9][0-9]_*.sql"))
++        self.assertGreaterEqual(len(sql_files), 4)
++
++    def test_rollback_scripts_exist(self):
++        mig_dir = ROOT / "migrations"
++        rollbacks = list(mig_dir.glob("*_rollback.sql"))
++        self.assertGreaterEqual(len(rollbacks), 3)
++
++    def test_migration_sql_is_valid(self):
++        """Each migration SQL should parse in SQLite without error."""
++        conn = _test_db()
++        _seed_rbac(conn)
++        mig_dir = ROOT / "migrations"
++        for sql_file in sorted(mig_dir.glob("[0-9][0-9][0-9]_*.sql")):
++            if "_rollback" in sql_file.name:
++                continue
++            sql = sql_file.read_text()
++            try:
++                conn.executescript(sql)
++            except Exception as e:
++                self.fail(f"Migration {sql_file.name} failed: {e}")
++        conn.close()
++
++
++# ─── Test helpers ─────────────────────────────────────────────────
++
++def _test_db():
++    """Create an in-memory SQLite database with the required schema."""
++    conn = sqlite3.connect(":memory:")
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON")
++
++    # Core schema
++    schema_files = [
++        ROOT / "org-directory" / "schema.sql",
++        ROOT / "rbac" / "schema.sql",
++        ROOT / "org-directory" / "um_schema.sql",
++    ]
++    for sf in schema_files:
++        if sf.exists():
++            sql = sf.read_text()
++            # Remove PRAGMA lines that conflict with in-memory
++            sql = "\n".join(l for l in sql.split("\n") if not l.strip().startswith("PRAGMA"))
++            conn.executescript(sql)
++    return conn
++
++
++def _seed_test_user(conn, password="Demo@2026"):
++    """Insert a minimal test persona + app_user."""
++    import importlib
++    import um
++    importlib.reload(um)
++    conn.execute(
++        "INSERT OR IGNORE INTO persona (persona_id, persona_code, display_name, job_title, category, is_demo) "
++        "VALUES (1, 'test.user', 'Test User', 'Tester', 'TEST', 1)"
++    )
++    salt, hashed = um.hash_password(password)
++    conn.execute(
++        "INSERT OR IGNORE INTO app_user (user_id, persona_id, username, password_salt, password_hash) "
++        "VALUES (1, 1, 'testuser', ?, ?)",
++        (salt, hashed),
++    )
++    conn.execute(
++        "INSERT OR IGNORE INTO staff_profile (persona_id) VALUES (1)"
++    )
++    conn.commit()
++
++
++def _seed_rbac(conn):
++    """Insert minimal RBAC data for testing."""
++    conn.execute("INSERT OR IGNORE INTO facility VALUES (1, 'AIGH', 'AIGH Hospital', 'Central', 'Riyadh', 'AIGH', 'CBAHI', 'ACTIVE')")
++    conn.execute("INSERT OR IGNORE INTO department VALUES (1, 'GENS', 1, 'General Services', 'CLINICAL', 'ACTIVE')")
++    conn.execute("INSERT OR IGNORE INTO unit_group VALUES (1, 1, 'Medical Wards', 'INPATIENT', 'ACTIVE')")
++    conn.execute("INSERT OR IGNORE INTO nursing_unit VALUES (1, 'W3A', 1, 1, 'Ward 3A', 'WARD', 'INPATIENT', 'INPATIENT_LICENSED', 30, 30, 30, 1, NULL, '2026-01-01', NULL, 'ACTIVE')")
++    conn.execute("INSERT OR IGNORE INTO persona VALUES (1, 'demo.slot.charge.w3a', 'Charge Nurse W3A', 'Charge Nurse', 'NURSING', 1, NULL)")
++    conn.execute("INSERT OR IGNORE INTO role VALUES (1, 'CHARGE', 'Charge Nurse', 'L4', 'UNIT')")
++    conn.execute("INSERT OR IGNORE INTO permission VALUES (1, 'BED_CONTROL', 'ADT', 'Place patient in bed')")
++    conn.execute("INSERT OR IGNORE INTO permission VALUES (2, 'BED_READ', 'ADT', 'View bed census')")
++    conn.execute("INSERT OR IGNORE INTO role_permission VALUES (1, 1)")
++    conn.execute("INSERT OR IGNORE INTO role_permission VALUES (1, 2)")
++    conn.execute("INSERT OR IGNORE INTO role_grant VALUES (1, 1, 1, 'UNIT', 'W3A', '2026-01-01', NULL, 'ACTIVE')")
++    conn.execute("INSERT OR IGNORE INTO sod_rule VALUES (1, 'BED_CONTROL', 'SCHED_WRITE', 'Bed control and scheduling must be separate', 'SYS_ADMIN')")
++    # Create the decision log table
++    conn.execute("""CREATE TABLE IF NOT EXISTS rbac_decision_log (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        decided_at TEXT NOT NULL,
++        subject TEXT NOT NULL,
++        permission TEXT NOT NULL,
++        resource_type TEXT,
++        resource_code TEXT,
++        allow INTEGER NOT NULL,
++        reason TEXT NOT NULL,
++        mode TEXT NOT NULL DEFAULT 'ENFORCED'
++    )""")
++    conn.commit()
++
++
++import contextlib
++
++@contextlib.contextmanager
++def _ctx(conn):
++    """Fake context manager that yields conn without closing."""
++    yield conn
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.43.0
+

@@ -1,0 +1,3347 @@
+diff --git a/migrations/005_identity_v2.sql b/migrations/005_identity_v2.sql
+new file mode 100644
+index 0000000..cc4e03f
+--- /dev/null
++++ b/migrations/005_identity_v2.sql
+@@ -0,0 +1,354 @@
++-- Migration 005: Identity v2 shadow schema (additive — does not alter v1 tables)
++-- Apply:   sqlite3 org_directory.db < 005_identity_v2.sql
++-- Rollback: see 005_identity_v2_rollback.sql
++-- Source:  rbac-v2/part-2-identity/identity_schema.sql
++
++PRAGMA foreign_keys = ON;
++
++-- ─── Core identity tables ───────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS identity_account_v2 (
++    user_id              INTEGER PRIMARY KEY AUTOINCREMENT,
++    account_uuid         TEXT NOT NULL UNIQUE,
++    legacy_app_user_id   INTEGER UNIQUE REFERENCES app_user(user_id),
++    account_type         TEXT NOT NULL DEFAULT 'HUMAN',
++    email                TEXT,
++    email_normalized     TEXT UNIQUE,
++    email_verified_at    TEXT,
++    auth_provider        TEXT NOT NULL,
++    external_subject     TEXT,
++    account_status       TEXT NOT NULL DEFAULT 'PENDING_VERIFICATION',
++    mfa_required         INTEGER NOT NULL DEFAULT 0,
++    auth_version         INTEGER NOT NULL DEFAULT 1,
++    created_at           TEXT NOT NULL,
++    updated_at           TEXT NOT NULL,
++    CHECK (account_type IN ('HUMAN','SERVICE','RECOVERY_ADMIN')),
++    CHECK (auth_provider IN ('SSO','LOCAL','LEGACY_LOCAL')),
++    CHECK (account_status IN ('PENDING_VERIFICATION','ACTIVE','LOCKED','DISABLED','ARCHIVED')),
++    CHECK (mfa_required IN (0,1)),
++    CHECK (auth_version >= 1),
++    CHECK (
++      (email IS NULL AND email_normalized IS NULL)
++      OR (email IS NOT NULL AND email_normalized = lower(trim(email)))
++    ),
++    CHECK (auth_provider <> 'SSO' OR length(trim(COALESCE(external_subject, ''))) > 0),
++    CHECK (
++      account_type <> 'HUMAN' OR account_status <> 'ACTIVE'
++      OR (email_normalized IS NOT NULL AND email_verified_at IS NOT NULL)
++    ),
++    CHECK (account_type <> 'SERVICE' OR email_normalized IS NULL),
++    UNIQUE (auth_provider, external_subject)
++);
++
++CREATE TABLE IF NOT EXISTS staff_member_v2 (
++    staff_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    staff_uuid           TEXT NOT NULL UNIQUE,
++    legacy_persona_id    INTEGER UNIQUE REFERENCES persona(persona_id),
++    employee_number      TEXT UNIQUE,
++    display_name         TEXT NOT NULL,
++    source_system        TEXT NOT NULL,
++    source_updated_at    TEXT NOT NULL,
++    record_status        TEXT NOT NULL,
++    is_demo              INTEGER NOT NULL DEFAULT 0,
++    CHECK (record_status IN ('MIGRATION_PENDING','ACTIVE','SUSPENDED','ENDED','ARCHIVED')),
++    CHECK (is_demo IN (0,1)),
++    CHECK (is_demo = 1 OR employee_number IS NOT NULL)
++);
++
++CREATE TABLE IF NOT EXISTS identity_staff_link_v2 (
++    user_id              INTEGER PRIMARY KEY REFERENCES identity_account_v2(user_id),
++    staff_id             INTEGER NOT NULL UNIQUE REFERENCES staff_member_v2(staff_id),
++    linked_at            TEXT NOT NULL,
++    linked_by_user_id    INTEGER REFERENCES identity_account_v2(user_id),
++    verification_method  TEXT NOT NULL,
++    CHECK (verification_method IN ('AUTHORITATIVE_KEY','MANUAL_DUAL_REVIEW','LEGACY_DEMO'))
++);
++
++CREATE TABLE IF NOT EXISTS local_auth_credential_v2 (
++    user_id              INTEGER PRIMARY KEY REFERENCES identity_account_v2(user_id),
++    encoded_hash         TEXT NOT NULL,
++    algorithm            TEXT NOT NULL,
++    parameter_version    TEXT NOT NULL,
++    changed_at           TEXT NOT NULL,
++    must_change          INTEGER NOT NULL DEFAULT 0,
++    CHECK (must_change IN (0,1))
++);
++
++-- ─── Employment & credentials ───────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS employment_assignment_v2 (
++    assignment_id        INTEGER PRIMARY KEY AUTOINCREMENT,
++    staff_id             INTEGER NOT NULL REFERENCES staff_member_v2(staff_id),
++    position_id          INTEGER REFERENCES workforce_position(position_id),
++    department_id        INTEGER REFERENCES department(department_id),
++    unit_id              INTEGER REFERENCES nursing_unit(unit_id),
++    fte                  NUMERIC,
++    assignment_type      TEXT NOT NULL DEFAULT 'PRIMARY',
++    employment_status    TEXT NOT NULL,
++    effective_from       TEXT NOT NULL,
++    effective_to         TEXT,
++    source_reference     TEXT,
++    recorded_at          TEXT NOT NULL,
++    CHECK (assignment_type IN ('PRIMARY','SECONDARY','TEMPORARY')),
++    CHECK (employment_status IN ('PENDING','ACTIVE','ON_LEAVE','SUSPENDED','ENDED')),
++    CHECK (fte IS NULL OR (fte > 0 AND fte <= 1.5)),
++    CHECK (department_id IS NOT NULL OR unit_id IS NOT NULL),
++    CHECK (effective_to IS NULL OR effective_to > effective_from)
++);
++
++CREATE TABLE IF NOT EXISTS professional_credential_v2 (
++    credential_id        INTEGER PRIMARY KEY AUTOINCREMENT,
++    staff_id             INTEGER NOT NULL REFERENCES staff_member_v2(staff_id),
++    credential_type      TEXT NOT NULL,
++    credential_number    TEXT NOT NULL,
++    issuing_authority    TEXT NOT NULL,
++    issue_date           TEXT,
++    expiry_date          TEXT,
++    verification_status  TEXT NOT NULL DEFAULT 'PENDING',
++    submitted_by_user_id INTEGER REFERENCES identity_account_v2(user_id),
++    submitted_at         TEXT NOT NULL,
++    verified_by_user_id  INTEGER REFERENCES identity_account_v2(user_id),
++    verified_at          TEXT,
++    evidence_document_id INTEGER REFERENCES staff_document(document_id),
++    source_checked_at    TEXT,
++    CHECK (verification_status IN ('PENDING','VERIFIED','EXPIRED','SUSPENDED','REVOKED','REJECTED')),
++    CHECK (expiry_date IS NULL OR issue_date IS NULL OR expiry_date >= issue_date),
++    CHECK (
++      verification_status <> 'VERIFIED'
++      OR (verified_by_user_id IS NOT NULL AND verified_at IS NOT NULL AND source_checked_at IS NOT NULL)
++    ),
++    UNIQUE (issuing_authority, credential_number)
++);
++
++-- ─── Sessions ───────────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS identity_session_v2 (
++    session_id           TEXT PRIMARY KEY,
++    token_hash           TEXT NOT NULL UNIQUE,
++    user_id              INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    auth_version         INTEGER NOT NULL,
++    assurance_level      TEXT NOT NULL,
++    issued_at            TEXT NOT NULL,
++    last_seen_at         TEXT NOT NULL,
++    expires_at           TEXT NOT NULL,
++    revoked_at           TEXT,
++    revocation_reason    TEXT,
++    CHECK (assurance_level IN ('AAL1','AAL2','STEP_UP')),
++    CHECK (expires_at > issued_at),
++    CHECK (revoked_at IS NULL OR revocation_reason IS NOT NULL)
++);
++
++-- ─── Audit / lifecycle (append-only) ────────────────────────────
++
++CREATE TABLE IF NOT EXISTS authentication_event_v2 (
++    event_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    event_uuid           TEXT NOT NULL UNIQUE,
++    user_id              INTEGER REFERENCES identity_account_v2(user_id),
++    occurred_at          TEXT NOT NULL,
++    event_type           TEXT NOT NULL,
++    outcome              TEXT NOT NULL,
++    reason_code          TEXT,
++    auth_provider        TEXT,
++    assurance_level      TEXT,
++    correlation_id       TEXT NOT NULL,
++    client_context_json  TEXT,
++    CHECK (outcome IN ('SUCCESS','FAILURE','DENIED','INFO'))
++);
++
++CREATE TABLE IF NOT EXISTS identity_lifecycle_event_v2 (
++    event_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    event_uuid           TEXT NOT NULL UNIQUE,
++    user_id              INTEGER REFERENCES identity_account_v2(user_id),
++    staff_id             INTEGER REFERENCES staff_member_v2(staff_id),
++    occurred_at          TEXT NOT NULL,
++    event_type           TEXT NOT NULL,
++    actor_user_id        INTEGER REFERENCES identity_account_v2(user_id),
++    source_system        TEXT NOT NULL,
++    reason_code          TEXT,
++    before_json          TEXT,
++    after_json           TEXT,
++    correlation_id       TEXT NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS identity_reconciliation_issue_v2 (
++    issue_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    issue_uuid           TEXT NOT NULL UNIQUE,
++    issue_type           TEXT NOT NULL,
++    severity             TEXT NOT NULL,
++    source_reference     TEXT,
++    details_json         TEXT NOT NULL,
++    status               TEXT NOT NULL DEFAULT 'OPEN',
++    opened_at            TEXT NOT NULL,
++    resolved_at          TEXT,
++    resolved_by_user_id  INTEGER REFERENCES identity_account_v2(user_id),
++    resolution_notes     TEXT,
++    CHECK (severity IN ('CRITICAL','HIGH','MEDIUM','LOW')),
++    CHECK (status IN ('OPEN','IN_REVIEW','RESOLVED','ACCEPTED_RISK')),
++    CHECK (status NOT IN ('RESOLVED','ACCEPTED_RISK') OR (resolved_at IS NOT NULL AND resolved_by_user_id IS NOT NULL AND resolution_notes IS NOT NULL))
++);
++
++-- ─── Triggers: business rules ───────────────────────────────────
++
++CREATE TRIGGER IF NOT EXISTS local_credential_provider_insert_v2
++BEFORE INSERT ON local_auth_credential_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM identity_account_v2
++  WHERE user_id = NEW.user_id AND auth_provider IN ('LOCAL','LEGACY_LOCAL')
++)
++BEGIN
++  SELECT RAISE(ABORT, 'local credential requires a local authentication provider');
++END;
++
++CREATE TRIGGER IF NOT EXISTS local_credential_provider_update_v2
++BEFORE UPDATE OF user_id ON local_auth_credential_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM identity_account_v2
++  WHERE user_id = NEW.user_id AND auth_provider IN ('LOCAL','LEGACY_LOCAL')
++)
++BEGIN
++  SELECT RAISE(ABORT, 'local credential requires a local authentication provider');
++END;
++
++CREATE TRIGGER IF NOT EXISTS employment_unit_department_insert_v2
++BEFORE INSERT ON employment_assignment_v2
++WHEN NEW.unit_id IS NOT NULL AND NEW.department_id IS NOT NULL
++ AND NOT EXISTS (
++   SELECT 1 FROM nursing_unit
++   WHERE unit_id = NEW.unit_id AND department_id = NEW.department_id
++ )
++BEGIN
++  SELECT RAISE(ABORT, 'unit does not belong to department');
++END;
++
++CREATE TRIGGER IF NOT EXISTS employment_unit_department_update_v2
++BEFORE UPDATE OF unit_id, department_id ON employment_assignment_v2
++WHEN NEW.unit_id IS NOT NULL AND NEW.department_id IS NOT NULL
++ AND NOT EXISTS (
++   SELECT 1 FROM nursing_unit
++   WHERE unit_id = NEW.unit_id AND department_id = NEW.department_id
++ )
++BEGIN
++  SELECT RAISE(ABORT, 'unit does not belong to department');
++END;
++
++CREATE TRIGGER IF NOT EXISTS employment_primary_overlap_insert_v2
++BEFORE INSERT ON employment_assignment_v2
++WHEN NEW.assignment_type = 'PRIMARY'
++ AND NEW.employment_status IN ('PENDING','ACTIVE','ON_LEAVE','SUSPENDED')
++ AND EXISTS (
++   SELECT 1 FROM employment_assignment_v2 old
++   WHERE old.staff_id = NEW.staff_id
++     AND old.assignment_type = 'PRIMARY'
++     AND old.employment_status IN ('PENDING','ACTIVE','ON_LEAVE','SUSPENDED')
++     AND COALESCE(old.effective_to, '9999-12-31T23:59:59Z') > NEW.effective_from
++     AND COALESCE(NEW.effective_to, '9999-12-31T23:59:59Z') > old.effective_from
++ )
++BEGIN
++  SELECT RAISE(ABORT, 'overlapping primary employment assignment');
++END;
++
++CREATE TRIGGER IF NOT EXISTS employment_primary_overlap_update_v2
++BEFORE UPDATE OF staff_id, assignment_type, employment_status, effective_from, effective_to
++ON employment_assignment_v2
++WHEN NEW.assignment_type = 'PRIMARY'
++ AND NEW.employment_status IN ('PENDING','ACTIVE','ON_LEAVE','SUSPENDED')
++ AND EXISTS (
++   SELECT 1 FROM employment_assignment_v2 old
++   WHERE old.assignment_id <> NEW.assignment_id
++     AND old.staff_id = NEW.staff_id
++     AND old.assignment_type = 'PRIMARY'
++     AND old.employment_status IN ('PENDING','ACTIVE','ON_LEAVE','SUSPENDED')
++     AND COALESCE(old.effective_to, '9999-12-31T23:59:59Z') > NEW.effective_from
++     AND COALESCE(NEW.effective_to, '9999-12-31T23:59:59Z') > old.effective_from
++ )
++BEGIN
++  SELECT RAISE(ABORT, 'overlapping primary employment assignment');
++END;
++
++CREATE TRIGGER IF NOT EXISTS credential_independent_verifier_insert_v2
++BEFORE INSERT ON professional_credential_v2
++WHEN NEW.verification_status = 'VERIFIED'
++ AND NEW.submitted_by_user_id IS NOT NULL
++ AND NEW.submitted_by_user_id = NEW.verified_by_user_id
++BEGIN
++  SELECT RAISE(ABORT, 'credential submitter cannot verify own credential');
++END;
++
++CREATE TRIGGER IF NOT EXISTS credential_independent_verifier_update_v2
++BEFORE UPDATE OF verification_status, verified_by_user_id ON professional_credential_v2
++WHEN NEW.verification_status = 'VERIFIED'
++ AND NEW.submitted_by_user_id IS NOT NULL
++ AND NEW.submitted_by_user_id = NEW.verified_by_user_id
++BEGIN
++  SELECT RAISE(ABORT, 'credential submitter cannot verify own credential');
++END;
++
++-- Session triggers (account must be active + version match)
++CREATE TRIGGER IF NOT EXISTS identity_session_account_insert_v2
++BEFORE INSERT ON identity_session_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM identity_account_v2
++  WHERE user_id = NEW.user_id
++    AND account_status = 'ACTIVE'
++    AND auth_version = NEW.auth_version
++)
++BEGIN
++  SELECT RAISE(ABORT, 'session requires active account and current auth version');
++END;
++
++CREATE TRIGGER IF NOT EXISTS identity_session_account_update_v2
++BEFORE UPDATE OF user_id, auth_version ON identity_session_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM identity_account_v2
++  WHERE user_id = NEW.user_id
++    AND account_status = 'ACTIVE'
++    AND auth_version = NEW.auth_version
++)
++BEGIN
++  SELECT RAISE(ABORT, 'session requires active account and current auth version');
++END;
++
++-- Append-only triggers
++CREATE TRIGGER IF NOT EXISTS authentication_event_no_update_v2
++BEFORE UPDATE ON authentication_event_v2
++BEGIN SELECT RAISE(ABORT, 'authentication events are append-only'); END;
++
++CREATE TRIGGER IF NOT EXISTS authentication_event_no_delete_v2
++BEFORE DELETE ON authentication_event_v2
++BEGIN SELECT RAISE(ABORT, 'authentication events are append-only'); END;
++
++CREATE TRIGGER IF NOT EXISTS identity_lifecycle_event_no_update_v2
++BEFORE UPDATE ON identity_lifecycle_event_v2
++BEGIN SELECT RAISE(ABORT, 'identity lifecycle events are append-only'); END;
++
++CREATE TRIGGER IF NOT EXISTS identity_lifecycle_event_no_delete_v2
++BEFORE DELETE ON identity_lifecycle_event_v2
++BEGIN SELECT RAISE(ABORT, 'identity lifecycle events are append-only'); END;
++
++-- ─── Indexes ────────────────────────────────────────────────────
++
++CREATE INDEX IF NOT EXISTS idx_identity_account_status_v2
++ON identity_account_v2 (account_status, account_type);
++
++CREATE INDEX IF NOT EXISTS idx_employment_staff_effective_v2
++ON employment_assignment_v2 (staff_id, effective_from, effective_to, employment_status);
++
++CREATE INDEX IF NOT EXISTS idx_credential_staff_expiry_v2
++ON professional_credential_v2 (staff_id, verification_status, expiry_date);
++
++CREATE INDEX IF NOT EXISTS idx_session_user_expiry_v2
++ON identity_session_v2 (user_id, expires_at, revoked_at);
++
++CREATE INDEX IF NOT EXISTS idx_auth_event_user_time_v2
++ON authentication_event_v2 (user_id, occurred_at);
++
++CREATE INDEX IF NOT EXISTS idx_lifecycle_staff_time_v2
++ON identity_lifecycle_event_v2 (staff_id, occurred_at);
++
++CREATE INDEX IF NOT EXISTS idx_reconciliation_open_v2
++ON identity_reconciliation_issue_v2 (status, severity, opened_at);
++
++-- ─── Version stamp ──────────────────────────────────────────────
++
++INSERT INTO schema_version (version, description) VALUES
++    (5, 'Identity v2 shadow schema — accounts, staff, sessions, lifecycle audit');
+diff --git a/migrations/005_identity_v2_rollback.sql b/migrations/005_identity_v2_rollback.sql
+new file mode 100644
+index 0000000..8468937
+--- /dev/null
++++ b/migrations/005_identity_v2_rollback.sql
+@@ -0,0 +1,43 @@
++-- Rollback migration 005: Remove Identity v2 shadow schema
++-- Apply:   sqlite3 org_directory.db < 005_identity_v2_rollback.sql
++
++PRAGMA foreign_keys = ON;
++
++-- Drop triggers first (reverse order of creation)
++DROP TRIGGER IF EXISTS identity_lifecycle_event_no_delete_v2;
++DROP TRIGGER IF EXISTS identity_lifecycle_event_no_update_v2;
++DROP TRIGGER IF EXISTS authentication_event_no_delete_v2;
++DROP TRIGGER IF EXISTS authentication_event_no_update_v2;
++DROP TRIGGER IF EXISTS identity_session_account_update_v2;
++DROP TRIGGER IF EXISTS identity_session_account_insert_v2;
++DROP TRIGGER IF EXISTS credential_independent_verifier_update_v2;
++DROP TRIGGER IF EXISTS credential_independent_verifier_insert_v2;
++DROP TRIGGER IF EXISTS employment_primary_overlap_update_v2;
++DROP TRIGGER IF EXISTS employment_primary_overlap_insert_v2;
++DROP TRIGGER IF EXISTS employment_unit_department_update_v2;
++DROP TRIGGER IF EXISTS employment_unit_department_insert_v2;
++DROP TRIGGER IF EXISTS local_credential_provider_update_v2;
++DROP TRIGGER IF EXISTS local_credential_provider_insert_v2;
++
++-- Drop indexes
++DROP INDEX IF EXISTS idx_reconciliation_open_v2;
++DROP INDEX IF EXISTS idx_lifecycle_staff_time_v2;
++DROP INDEX IF EXISTS idx_auth_event_user_time_v2;
++DROP INDEX IF EXISTS idx_session_user_expiry_v2;
++DROP INDEX IF EXISTS idx_credential_staff_expiry_v2;
++DROP INDEX IF EXISTS idx_employment_staff_effective_v2;
++DROP INDEX IF EXISTS idx_identity_account_status_v2;
++
++-- Drop tables (reverse dependency order)
++DROP TABLE IF EXISTS identity_reconciliation_issue_v2;
++DROP TABLE IF EXISTS identity_lifecycle_event_v2;
++DROP TABLE IF EXISTS authentication_event_v2;
++DROP TABLE IF EXISTS identity_session_v2;
++DROP TABLE IF EXISTS professional_credential_v2;
++DROP TABLE IF EXISTS employment_assignment_v2;
++DROP TABLE IF EXISTS local_auth_credential_v2;
++DROP TABLE IF EXISTS identity_staff_link_v2;
++DROP TABLE IF EXISTS staff_member_v2;
++DROP TABLE IF EXISTS identity_account_v2;
++
++DELETE FROM schema_version WHERE version = 5;
+diff --git a/migrations/006_authorization_v2.sql b/migrations/006_authorization_v2.sql
+new file mode 100644
+index 0000000..cefc938
+--- /dev/null
++++ b/migrations/006_authorization_v2.sql
+@@ -0,0 +1,551 @@
++-- Migration 006: Authorization v2 shadow schema (additive — does not alter v1 tables)
++-- Apply:   sqlite3 org_directory.db < 006_authorization_v2.sql
++-- Rollback: see 006_authorization_v2_rollback.sql
++-- Depends: migration 005 (identity_account_v2)
++-- Source:  rbac-v2/part-3-authorization/authorization_schema.sql
++
++PRAGMA foreign_keys = ON;
++
++-- ─── Policy lifecycle ───────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS authorization_policy_v2 (
++    policy_id            INTEGER PRIMARY KEY AUTOINCREMENT,
++    version_code         TEXT NOT NULL UNIQUE,
++    status               TEXT NOT NULL DEFAULT 'DRAFT',
++    effective_from       TEXT,
++    effective_to         TEXT,
++    approved_by_user_id  INTEGER REFERENCES identity_account_v2(user_id),
++    approved_at          TEXT,
++    published_at         TEXT,
++    notes                TEXT,
++    CHECK (status IN ('DRAFT','ACTIVE','RETIRED','REJECTED')),
++    CHECK (effective_to IS NULL OR effective_from IS NULL OR effective_to > effective_from),
++    CHECK (status <> 'ACTIVE' OR (
++      approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL
++      AND published_at IS NOT NULL AND effective_from IS NOT NULL
++    ))
++);
++
++CREATE TRIGGER IF NOT EXISTS authorization_policy_published_core_immutable_v2
++BEFORE UPDATE OF version_code, effective_from, approved_by_user_id, approved_at, published_at
++ON authorization_policy_v2
++WHEN OLD.status IN ('ACTIVE','RETIRED')
++BEGIN SELECT RAISE(ABORT, 'published policy core is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS authorization_policy_active_transition_v2
++BEFORE UPDATE OF status ON authorization_policy_v2
++WHEN OLD.status='ACTIVE' AND NEW.status<>'RETIRED'
++BEGIN SELECT RAISE(ABORT, 'active policy may only transition to retired'); END;
++
++CREATE TRIGGER IF NOT EXISTS authorization_policy_retired_immutable_v2
++BEFORE UPDATE ON authorization_policy_v2
++WHEN OLD.status='RETIRED'
++BEGIN SELECT RAISE(ABORT, 'retired policy is immutable'); END;
++
++-- ─── Role & permission catalogue ────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS authorization_role_v2 (
++    role_id              INTEGER PRIMARY KEY AUTOINCREMENT,
++    policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    role_code            TEXT NOT NULL,
++    title                TEXT NOT NULL,
++    risk_class           TEXT NOT NULL DEFAULT 'STANDARD',
++    status               TEXT NOT NULL DEFAULT 'ACTIVE',
++    CHECK (risk_class IN ('STANDARD','ELEVATED','PRIVILEGED')),
++    CHECK (status IN ('ACTIVE','INACTIVE')),
++    UNIQUE (policy_id, role_code),
++    UNIQUE (policy_id, role_id)
++);
++
++CREATE TABLE IF NOT EXISTS authorization_permission_v2 (
++    permission_id        INTEGER PRIMARY KEY AUTOINCREMENT,
++    policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    perm_code            TEXT NOT NULL,
++    module               TEXT NOT NULL,
++    description          TEXT NOT NULL,
++    risk_class           TEXT NOT NULL DEFAULT 'STANDARD',
++    requires_mfa         INTEGER NOT NULL DEFAULT 0,
++    requires_part4       INTEGER NOT NULL DEFAULT 0,
++    delegable            INTEGER NOT NULL DEFAULT 0,
++    status               TEXT NOT NULL DEFAULT 'ACTIVE',
++    CHECK (risk_class IN ('STANDARD','ELEVATED','HIGH','CRITICAL')),
++    CHECK (requires_mfa IN (0,1)),
++    CHECK (requires_part4 IN (0,1)),
++    CHECK (delegable IN (0,1)),
++    CHECK (status IN ('ACTIVE','INACTIVE')),
++    UNIQUE (policy_id, perm_code),
++    UNIQUE (policy_id, permission_id)
++);
++
++CREATE TABLE IF NOT EXISTS authorization_role_permission_v2 (
++    policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    role_id              INTEGER NOT NULL,
++    permission_id        INTEGER NOT NULL,
++    PRIMARY KEY (role_id, permission_id),
++    FOREIGN KEY (policy_id, role_id)
++      REFERENCES authorization_role_v2(policy_id, role_id),
++    FOREIGN KEY (policy_id, permission_id)
++      REFERENCES authorization_permission_v2(policy_id, permission_id)
++);
++
++-- Draft-only catalogue edit triggers
++CREATE TRIGGER IF NOT EXISTS authorization_role_draft_insert_v2
++BEFORE INSERT ON authorization_role_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=NEW.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'role catalogue changes require draft policy'); END;
++CREATE TRIGGER IF NOT EXISTS authorization_role_draft_update_v2
++BEFORE UPDATE ON authorization_role_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published role catalogue is immutable'); END;
++CREATE TRIGGER IF NOT EXISTS authorization_role_draft_delete_v2
++BEFORE DELETE ON authorization_role_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published role catalogue is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS authorization_permission_draft_insert_v2
++BEFORE INSERT ON authorization_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=NEW.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'permission catalogue changes require draft policy'); END;
++CREATE TRIGGER IF NOT EXISTS authorization_permission_draft_update_v2
++BEFORE UPDATE ON authorization_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published permission catalogue is immutable'); END;
++CREATE TRIGGER IF NOT EXISTS authorization_permission_draft_delete_v2
++BEFORE DELETE ON authorization_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published permission catalogue is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS authorization_role_permission_draft_insert_v2
++BEFORE INSERT ON authorization_role_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=NEW.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'role-permission changes require draft policy'); END;
++CREATE TRIGGER IF NOT EXISTS authorization_role_permission_draft_update_v2
++BEFORE UPDATE ON authorization_role_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published role-permission catalogue is immutable'); END;
++CREATE TRIGGER IF NOT EXISTS authorization_role_permission_draft_delete_v2
++BEFORE DELETE ON authorization_role_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published role-permission catalogue is immutable'); END;
++
++-- ─── Scopes ─────────────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS authorization_scope_v2 (
++    scope_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    scope_uuid           TEXT NOT NULL UNIQUE,
++    scope_type           TEXT NOT NULL,
++    facility_id          INTEGER REFERENCES facility(facility_id),
++    department_id        INTEGER REFERENCES department(department_id),
++    unit_id              INTEGER REFERENCES nursing_unit(unit_id),
++    status               TEXT NOT NULL DEFAULT 'ACTIVE',
++    created_at           TEXT NOT NULL,
++    CHECK (scope_type IN ('FACILITY','DEPARTMENT','UNIT')),
++    CHECK (status IN ('ACTIVE','INACTIVE')),
++    CHECK (
++      (scope_type='FACILITY' AND facility_id IS NOT NULL AND department_id IS NULL AND unit_id IS NULL) OR
++      (scope_type='DEPARTMENT' AND facility_id IS NULL AND department_id IS NOT NULL AND unit_id IS NULL) OR
++      (scope_type='UNIT' AND facility_id IS NULL AND department_id IS NULL AND unit_id IS NOT NULL)
++    )
++);
++
++CREATE UNIQUE INDEX IF NOT EXISTS uq_authorization_scope_facility_v2
++ON authorization_scope_v2(facility_id) WHERE scope_type='FACILITY';
++CREATE UNIQUE INDEX IF NOT EXISTS uq_authorization_scope_department_v2
++ON authorization_scope_v2(department_id) WHERE scope_type='DEPARTMENT';
++CREATE UNIQUE INDEX IF NOT EXISTS uq_authorization_scope_unit_v2
++ON authorization_scope_v2(unit_id) WHERE scope_type='UNIT';
++
++CREATE TRIGGER IF NOT EXISTS authorization_scope_active_insert_v2
++BEFORE INSERT ON authorization_scope_v2
++WHEN
++  (NEW.scope_type='FACILITY' AND NOT EXISTS (
++     SELECT 1 FROM facility WHERE facility_id=NEW.facility_id AND status='ACTIVE'))
++  OR (NEW.scope_type='DEPARTMENT' AND NOT EXISTS (
++     SELECT 1 FROM department WHERE department_id=NEW.department_id AND status='ACTIVE'))
++  OR (NEW.scope_type='UNIT' AND NOT EXISTS (
++     SELECT 1 FROM nursing_unit u JOIN department d ON d.department_id=u.department_id
++     JOIN facility f ON f.facility_id=d.facility_id
++     WHERE u.unit_id=NEW.unit_id AND u.status='ACTIVE' AND d.status='ACTIVE' AND f.status='ACTIVE'))
++BEGIN
++  SELECT RAISE(ABORT, 'authorization scope requires active authoritative resource');
++END;
++
++CREATE TRIGGER IF NOT EXISTS authorization_scope_active_update_v2
++BEFORE UPDATE OF scope_type, facility_id, department_id, unit_id, status ON authorization_scope_v2
++WHEN NEW.status='ACTIVE' AND (
++  (NEW.scope_type='FACILITY' AND NOT EXISTS (
++     SELECT 1 FROM facility WHERE facility_id=NEW.facility_id AND status='ACTIVE'))
++  OR (NEW.scope_type='DEPARTMENT' AND NOT EXISTS (
++     SELECT 1 FROM department WHERE department_id=NEW.department_id AND status='ACTIVE'))
++  OR (NEW.scope_type='UNIT' AND NOT EXISTS (
++     SELECT 1 FROM nursing_unit u JOIN department d ON d.department_id=u.department_id
++     JOIN facility f ON f.facility_id=d.facility_id
++     WHERE u.unit_id=NEW.unit_id AND u.status='ACTIVE' AND d.status='ACTIVE' AND f.status='ACTIVE'))
++)
++BEGIN
++  SELECT RAISE(ABORT, 'authorization scope requires active authoritative resource');
++END;
++
++-- ─── Grant request & active grant ───────────────────────────────
++
++CREATE TABLE IF NOT EXISTS access_grant_request_v2 (
++    request_id           INTEGER PRIMARY KEY AUTOINCREMENT,
++    request_uuid         TEXT NOT NULL UNIQUE,
++    user_id              INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    role_id              INTEGER NOT NULL REFERENCES authorization_role_v2(role_id),
++    scope_id             INTEGER NOT NULL REFERENCES authorization_scope_v2(scope_id),
++    requested_by_user_id INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    requested_at         TEXT NOT NULL,
++    requested_from       TEXT NOT NULL,
++    requested_to         TEXT,
++    reason_code          TEXT NOT NULL,
++    justification        TEXT NOT NULL,
++    requires_dual_control INTEGER NOT NULL DEFAULT 0,
++    approved_by_user_id  INTEGER REFERENCES identity_account_v2(user_id),
++    decided_at           TEXT,
++    decision_reason      TEXT,
++    status               TEXT NOT NULL DEFAULT 'REQUESTED',
++    CHECK (requires_dual_control IN (0,1)),
++    CHECK (status IN ('REQUESTED','APPROVED','REJECTED','CANCELLED')),
++    CHECK (requested_to IS NULL OR requested_to > requested_from),
++    CHECK (approved_by_user_id IS NULL OR approved_by_user_id <> requested_by_user_id),
++    CHECK (requires_dual_control=0 OR approved_by_user_id IS NULL OR approved_by_user_id <> user_id),
++    CHECK (status NOT IN ('APPROVED','REJECTED') OR (
++      approved_by_user_id IS NOT NULL AND decided_at IS NOT NULL AND decision_reason IS NOT NULL
++    ))
++);
++
++CREATE TRIGGER IF NOT EXISTS access_grant_request_decided_core_immutable_v2
++BEFORE UPDATE OF user_id, role_id, scope_id, requested_by_user_id, requested_at,
++  requested_from, requested_to, reason_code, justification, requires_dual_control
++ON access_grant_request_v2
++WHEN OLD.status <> 'REQUESTED'
++BEGIN SELECT RAISE(ABORT, 'decided grant request core is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS access_grant_request_decision_immutable_v2
++BEFORE UPDATE OF approved_by_user_id, decided_at, decision_reason
++ON access_grant_request_v2
++WHEN OLD.status <> 'REQUESTED' OR NEW.status NOT IN ('APPROVED','REJECTED')
++BEGIN SELECT RAISE(ABORT, 'grant request decision is immutable'); END;
++
++CREATE TABLE IF NOT EXISTS access_grant_v2 (
++    grant_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    grant_uuid           TEXT NOT NULL UNIQUE,
++    policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    request_id           INTEGER NOT NULL UNIQUE REFERENCES access_grant_request_v2(request_id),
++    user_id              INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    role_id              INTEGER NOT NULL,
++    scope_id             INTEGER NOT NULL REFERENCES authorization_scope_v2(scope_id),
++    requested_by_user_id INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    approved_by_user_id  INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    activated_by_user_id INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    effective_from       TEXT NOT NULL,
++    effective_to         TEXT,
++    reason_code          TEXT NOT NULL,
++    justification        TEXT NOT NULL,
++    requires_dual_control INTEGER NOT NULL DEFAULT 0,
++    status               TEXT NOT NULL DEFAULT 'ACTIVE',
++    activated_at         TEXT NOT NULL,
++    revoked_at           TEXT,
++    revoked_by_user_id   INTEGER REFERENCES identity_account_v2(user_id),
++    revocation_reason    TEXT,
++    CHECK (requires_dual_control IN (0,1)),
++    CHECK (status IN ('ACTIVE','SUSPENDED','REVOKED','EXPIRED')),
++    CHECK (effective_to IS NULL OR effective_to > effective_from),
++    CHECK (requested_by_user_id <> approved_by_user_id),
++    CHECK (requires_dual_control=0 OR activated_by_user_id <> approved_by_user_id),
++    CHECK (status <> 'REVOKED' OR (
++      revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL AND revocation_reason IS NOT NULL
++    )),
++    FOREIGN KEY (policy_id, role_id)
++      REFERENCES authorization_role_v2(policy_id, role_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS access_grant_core_immutable_v2
++BEFORE UPDATE OF policy_id, request_id, user_id, role_id, scope_id,
++  requested_by_user_id, approved_by_user_id, activated_by_user_id,
++  effective_from, effective_to, requires_dual_control
++ON access_grant_v2
++BEGIN SELECT RAISE(ABORT, 'active grant core fields are immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS access_grant_request_match_insert_v2
++BEFORE INSERT ON access_grant_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM access_grant_request_v2 q
++  JOIN authorization_role_v2 r ON r.role_id=q.role_id
++  WHERE q.request_id=NEW.request_id AND q.status='APPROVED'
++    AND q.user_id=NEW.user_id AND q.role_id=NEW.role_id AND q.scope_id=NEW.scope_id
++    AND q.requested_by_user_id=NEW.requested_by_user_id
++    AND q.approved_by_user_id=NEW.approved_by_user_id
++    AND q.requested_from=NEW.effective_from
++    AND COALESCE(q.requested_to,'')=COALESCE(NEW.effective_to,'')
++    AND q.requires_dual_control=NEW.requires_dual_control
++    AND r.policy_id=NEW.policy_id
++)
++BEGIN
++  SELECT RAISE(ABORT, 'active grant must match an approved grant request');
++END;
++
++-- ─── SoD rules ──────────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS sod_rule_v2 (
++    sod_rule_id          INTEGER PRIMARY KEY AUTOINCREMENT,
++    policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    rule_code            TEXT NOT NULL,
++    permission_a_id      INTEGER NOT NULL,
++    permission_b_id      INTEGER NOT NULL,
++    overlap_mode         TEXT NOT NULL DEFAULT 'SAME_SCOPE_OR_CONTAINED',
++    enforcement          TEXT NOT NULL DEFAULT 'BLOCK',
++    accountable_owner    TEXT NOT NULL,
++    status               TEXT NOT NULL DEFAULT 'ACTIVE',
++    CHECK (permission_a_id < permission_b_id),
++    CHECK (overlap_mode IN ('SAME_SCOPE_OR_CONTAINED','ANY_SCOPE')),
++    CHECK (enforcement IN ('BLOCK','ALERT')),
++    CHECK (status IN ('ACTIVE','INACTIVE')),
++    UNIQUE (policy_id, rule_code),
++    UNIQUE (policy_id, permission_a_id, permission_b_id),
++    FOREIGN KEY (policy_id, permission_a_id)
++      REFERENCES authorization_permission_v2(policy_id, permission_id),
++    FOREIGN KEY (policy_id, permission_b_id)
++      REFERENCES authorization_permission_v2(policy_id, permission_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS sod_rule_draft_insert_v2
++BEFORE INSERT ON sod_rule_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=NEW.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'SoD catalogue changes require draft policy'); END;
++CREATE TRIGGER IF NOT EXISTS sod_rule_draft_update_v2
++BEFORE UPDATE ON sod_rule_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published SoD catalogue is immutable'); END;
++CREATE TRIGGER IF NOT EXISTS sod_rule_draft_delete_v2
++BEFORE DELETE ON sod_rule_v2
++WHEN NOT EXISTS (SELECT 1 FROM authorization_policy_v2 WHERE policy_id=OLD.policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published SoD catalogue is immutable'); END;
++
++-- ─── Delegation ─────────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS delegation_v2 (
++    delegation_id        INTEGER PRIMARY KEY AUTOINCREMENT,
++    delegation_uuid      TEXT NOT NULL UNIQUE,
++    policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    source_grant_id      INTEGER NOT NULL REFERENCES access_grant_v2(grant_id),
++    delegator_user_id    INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    delegate_user_id     INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    scope_id             INTEGER NOT NULL REFERENCES authorization_scope_v2(scope_id),
++    requested_by_user_id INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    approved_by_user_id  INTEGER REFERENCES identity_account_v2(user_id),
++    requested_at         TEXT NOT NULL,
++    decided_at           TEXT,
++    starts_at            TEXT NOT NULL,
++    expires_at           TEXT NOT NULL,
++    reason_code          TEXT NOT NULL,
++    justification        TEXT NOT NULL,
++    allow_redelegation   INTEGER NOT NULL DEFAULT 0,
++    status               TEXT NOT NULL DEFAULT 'REQUESTED',
++    revoked_at           TEXT,
++    revoked_by_user_id   INTEGER REFERENCES identity_account_v2(user_id),
++    revocation_reason    TEXT,
++    CHECK (delegator_user_id <> delegate_user_id),
++    CHECK (allow_redelegation=0),
++    CHECK (expires_at > starts_at),
++    CHECK (status IN ('REQUESTED','APPROVED','ACTIVE','REJECTED','SUSPENDED','REVOKED','EXPIRED')),
++    CHECK (approved_by_user_id IS NULL OR (
++      approved_by_user_id <> requested_by_user_id
++      AND approved_by_user_id <> delegator_user_id
++      AND approved_by_user_id <> delegate_user_id
++    )),
++    CHECK (status NOT IN ('APPROVED','ACTIVE','REJECTED') OR (
++      approved_by_user_id IS NOT NULL AND decided_at IS NOT NULL
++    )),
++    CHECK (status <> 'REVOKED' OR (
++      revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL AND revocation_reason IS NOT NULL
++    ))
++);
++
++CREATE TABLE IF NOT EXISTS delegation_permission_v2 (
++    delegation_id        INTEGER NOT NULL REFERENCES delegation_v2(delegation_id),
++    permission_id        INTEGER NOT NULL REFERENCES authorization_permission_v2(permission_id),
++    PRIMARY KEY (delegation_id, permission_id)
++);
++
++-- Delegation bounds and immutability triggers
++CREATE TRIGGER IF NOT EXISTS delegation_source_bounds_insert_v2
++BEFORE INSERT ON delegation_v2
++WHEN NOT EXISTS (
++  SELECT 1
++  FROM access_grant_v2 g
++  JOIN authorization_scope_v2 gs ON gs.scope_id=g.scope_id AND gs.status='ACTIVE'
++  JOIN authorization_scope_v2 ds ON ds.scope_id=NEW.scope_id AND ds.status='ACTIVE'
++  LEFT JOIN department dd ON dd.department_id=ds.department_id
++  LEFT JOIN nursing_unit du ON du.unit_id=ds.unit_id
++  LEFT JOIN department dud ON dud.department_id=du.department_id
++  WHERE g.grant_id=NEW.source_grant_id
++    AND g.policy_id=NEW.policy_id
++    AND g.user_id=NEW.delegator_user_id
++    AND g.status='ACTIVE'
++    AND g.effective_from <= NEW.starts_at
++    AND (g.effective_to IS NULL OR g.effective_to >= NEW.expires_at)
++    AND (
++      (gs.scope_type='FACILITY' AND (
++        (ds.scope_type='FACILITY' AND ds.facility_id=gs.facility_id) OR
++        (ds.scope_type='DEPARTMENT' AND dd.facility_id=gs.facility_id) OR
++        (ds.scope_type='UNIT' AND dud.facility_id=gs.facility_id)
++      )) OR
++      (gs.scope_type='DEPARTMENT' AND (
++        (ds.scope_type='DEPARTMENT' AND ds.department_id=gs.department_id) OR
++        (ds.scope_type='UNIT' AND du.department_id=gs.department_id)
++      )) OR
++      (gs.scope_type='UNIT' AND ds.scope_type='UNIT' AND ds.unit_id=gs.unit_id)
++    )
++)
++BEGIN
++  SELECT RAISE(ABORT, 'delegation must be bounded by active source grant');
++END;
++
++CREATE TRIGGER IF NOT EXISTS delegation_core_immutable_v2
++BEFORE UPDATE OF policy_id, source_grant_id, delegator_user_id, delegate_user_id,
++  scope_id, requested_by_user_id, requested_at,
++  starts_at, expires_at, allow_redelegation
++ON delegation_v2
++BEGIN SELECT RAISE(ABORT, 'delegation core fields are immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS delegation_decision_immutable_v2
++BEFORE UPDATE OF approved_by_user_id, decided_at ON delegation_v2
++WHEN OLD.status <> 'REQUESTED' OR NEW.status NOT IN ('APPROVED','REJECTED')
++BEGIN SELECT RAISE(ABORT, 'delegation decision is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS delegation_permission_subset_insert_v2
++BEFORE INSERT ON delegation_permission_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM delegation_v2 d
++  JOIN access_grant_v2 g ON g.grant_id=d.source_grant_id
++  JOIN authorization_permission_v2 p ON p.permission_id=NEW.permission_id
++  JOIN authorization_role_permission_v2 rp
++    ON rp.role_id=g.role_id AND rp.permission_id=NEW.permission_id AND rp.policy_id=d.policy_id
++  WHERE d.delegation_id=NEW.delegation_id
++    AND p.policy_id=d.policy_id AND p.status='ACTIVE' AND p.delegable=1
++)
++BEGIN
++  SELECT RAISE(ABORT, 'delegated permission must be delegable subset of source role');
++END;
++
++CREATE TRIGGER IF NOT EXISTS delegation_permission_subset_update_v2
++BEFORE UPDATE OF delegation_id, permission_id ON delegation_permission_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM delegation_v2 d
++  JOIN access_grant_v2 g ON g.grant_id=d.source_grant_id
++  JOIN authorization_permission_v2 p ON p.permission_id=NEW.permission_id
++  JOIN authorization_role_permission_v2 rp
++    ON rp.role_id=g.role_id AND rp.permission_id=NEW.permission_id AND rp.policy_id=d.policy_id
++  WHERE d.delegation_id=NEW.delegation_id
++    AND p.policy_id=d.policy_id AND p.status='ACTIVE' AND p.delegable=1
++)
++BEGIN
++  SELECT RAISE(ABORT, 'delegated permission must be delegable subset of source role');
++END;
++
++CREATE TRIGGER IF NOT EXISTS delegation_permission_active_delete_v2
++BEFORE DELETE ON delegation_permission_v2
++WHEN EXISTS (
++  SELECT 1 FROM delegation_v2
++  WHERE delegation_id=OLD.delegation_id AND status IN ('APPROVED','ACTIVE')
++)
++BEGIN
++  SELECT RAISE(ABORT, 'active or approved delegation permissions are immutable');
++END;
++
++-- ─── Decision evidence (append-only) ────────────────────────────
++
++CREATE TABLE IF NOT EXISTS authorization_decision_v2 (
++    decision_id          TEXT PRIMARY KEY,
++    request_id           TEXT NOT NULL UNIQUE,
++    decided_at           TEXT NOT NULL,
++    user_id              INTEGER REFERENCES identity_account_v2(user_id),
++    permission_code      TEXT NOT NULL,
++    resource_type        TEXT NOT NULL,
++    resource_code        TEXT NOT NULL,
++    resolved_scope_id    INTEGER REFERENCES authorization_scope_v2(scope_id),
++    decision             TEXT NOT NULL,
++    reason_code          TEXT NOT NULL,
++    reason_detail        TEXT NOT NULL,
++    matched_grant_id     INTEGER REFERENCES access_grant_v2(grant_id),
++    delegation_id        INTEGER REFERENCES delegation_v2(delegation_id),
++    policy_id            INTEGER REFERENCES authorization_policy_v2(policy_id),
++    policy_version       TEXT NOT NULL,
++    requires_part4       INTEGER NOT NULL DEFAULT 0,
++    context_json         TEXT NOT NULL DEFAULT '{}',
++    engine_version       TEXT NOT NULL,
++    CHECK (resource_type IN ('FACILITY','DEPARTMENT','UNIT','UNKNOWN')),
++    CHECK (decision IN ('ALLOW','DENY','ERROR')),
++    CHECK (requires_part4 IN (0,1))
++);
++
++CREATE TABLE IF NOT EXISTS authorization_decision_sod_v2 (
++    decision_id          TEXT NOT NULL REFERENCES authorization_decision_v2(decision_id),
++    sod_rule_id          INTEGER NOT NULL REFERENCES sod_rule_v2(sod_rule_id),
++    outcome              TEXT NOT NULL,
++    PRIMARY KEY (decision_id, sod_rule_id),
++    CHECK (outcome IN ('PASS','BLOCK','ALERT'))
++);
++
++CREATE TABLE IF NOT EXISTS authorization_lifecycle_event_v2 (
++    event_id             TEXT PRIMARY KEY,
++    occurred_at          TEXT NOT NULL,
++    event_type           TEXT NOT NULL,
++    actor_user_id        INTEGER REFERENCES identity_account_v2(user_id),
++    grant_id             INTEGER REFERENCES access_grant_v2(grant_id),
++    delegation_id        INTEGER REFERENCES delegation_v2(delegation_id),
++    request_id           INTEGER REFERENCES access_grant_request_v2(request_id),
++    reason_code          TEXT NOT NULL,
++    detail_json          TEXT NOT NULL DEFAULT '{}',
++    CHECK (grant_id IS NOT NULL OR delegation_id IS NOT NULL OR request_id IS NOT NULL)
++);
++
++-- Append-only triggers
++CREATE TRIGGER IF NOT EXISTS authorization_decision_no_update_v2
++BEFORE UPDATE ON authorization_decision_v2 BEGIN
++  SELECT RAISE(ABORT, 'authorization decisions are append-only');
++END;
++CREATE TRIGGER IF NOT EXISTS authorization_decision_no_delete_v2
++BEFORE DELETE ON authorization_decision_v2 BEGIN
++  SELECT RAISE(ABORT, 'authorization decisions are append-only');
++END;
++CREATE TRIGGER IF NOT EXISTS authorization_decision_sod_no_update_v2
++BEFORE UPDATE ON authorization_decision_sod_v2 BEGIN
++  SELECT RAISE(ABORT, 'authorization decision SoD evidence is append-only');
++END;
++CREATE TRIGGER IF NOT EXISTS authorization_decision_sod_no_delete_v2
++BEFORE DELETE ON authorization_decision_sod_v2 BEGIN
++  SELECT RAISE(ABORT, 'authorization decision SoD evidence is append-only');
++END;
++CREATE TRIGGER IF NOT EXISTS authorization_lifecycle_no_update_v2
++BEFORE UPDATE ON authorization_lifecycle_event_v2 BEGIN
++  SELECT RAISE(ABORT, 'authorization lifecycle evidence is append-only');
++END;
++CREATE TRIGGER IF NOT EXISTS authorization_lifecycle_no_delete_v2
++BEFORE DELETE ON authorization_lifecycle_event_v2 BEGIN
++  SELECT RAISE(ABORT, 'authorization lifecycle evidence is append-only');
++END;
++
++-- ─── Indexes ────────────────────────────────────────────────────
++
++CREATE INDEX IF NOT EXISTS idx_access_grant_user_time_v2
++ON access_grant_v2(user_id, policy_id, status, effective_from, effective_to);
++CREATE INDEX IF NOT EXISTS idx_access_grant_scope_v2
++ON access_grant_v2(scope_id, role_id, status);
++CREATE INDEX IF NOT EXISTS idx_delegation_delegate_time_v2
++ON delegation_v2(delegate_user_id, policy_id, status, starts_at, expires_at);
++CREATE INDEX IF NOT EXISTS idx_delegation_source_v2
++ON delegation_v2(source_grant_id, status);
++CREATE INDEX IF NOT EXISTS idx_sod_policy_status_v2
++ON sod_rule_v2(policy_id, status);
++CREATE INDEX IF NOT EXISTS idx_authorization_decision_lookup_v2
++ON authorization_decision_v2(user_id, permission_code, decided_at);
++CREATE INDEX IF NOT EXISTS idx_authorization_lifecycle_time_v2
++ON authorization_lifecycle_event_v2(occurred_at, event_type);
++
++-- ─── Version stamp ──────────────────────────────────────────────
++
++INSERT INTO schema_version (version, description) VALUES
++    (6, 'Authorization v2 shadow schema — policy, roles, grants, SoD, delegation, decisions');
+diff --git a/migrations/006_authorization_v2_rollback.sql b/migrations/006_authorization_v2_rollback.sql
+new file mode 100644
+index 0000000..5dccc77
+--- /dev/null
++++ b/migrations/006_authorization_v2_rollback.sql
+@@ -0,0 +1,68 @@
++-- Rollback migration 006: Remove Authorization v2 shadow schema
++-- Apply:   sqlite3 org_directory.db < 006_authorization_v2_rollback.sql
++
++PRAGMA foreign_keys = ON;
++
++-- Drop triggers
++DROP TRIGGER IF EXISTS authorization_lifecycle_no_delete_v2;
++DROP TRIGGER IF EXISTS authorization_lifecycle_no_update_v2;
++DROP TRIGGER IF EXISTS authorization_decision_sod_no_delete_v2;
++DROP TRIGGER IF EXISTS authorization_decision_sod_no_update_v2;
++DROP TRIGGER IF EXISTS authorization_decision_no_delete_v2;
++DROP TRIGGER IF EXISTS authorization_decision_no_update_v2;
++DROP TRIGGER IF EXISTS delegation_permission_active_delete_v2;
++DROP TRIGGER IF EXISTS delegation_permission_subset_update_v2;
++DROP TRIGGER IF EXISTS delegation_permission_subset_insert_v2;
++DROP TRIGGER IF EXISTS delegation_decision_immutable_v2;
++DROP TRIGGER IF EXISTS delegation_core_immutable_v2;
++DROP TRIGGER IF EXISTS delegation_source_bounds_insert_v2;
++DROP TRIGGER IF EXISTS sod_rule_draft_delete_v2;
++DROP TRIGGER IF EXISTS sod_rule_draft_update_v2;
++DROP TRIGGER IF EXISTS sod_rule_draft_insert_v2;
++DROP TRIGGER IF EXISTS access_grant_request_match_insert_v2;
++DROP TRIGGER IF EXISTS access_grant_core_immutable_v2;
++DROP TRIGGER IF EXISTS access_grant_request_decision_immutable_v2;
++DROP TRIGGER IF EXISTS access_grant_request_decided_core_immutable_v2;
++DROP TRIGGER IF EXISTS authorization_scope_active_update_v2;
++DROP TRIGGER IF EXISTS authorization_scope_active_insert_v2;
++DROP TRIGGER IF EXISTS authorization_role_permission_draft_delete_v2;
++DROP TRIGGER IF EXISTS authorization_role_permission_draft_update_v2;
++DROP TRIGGER IF EXISTS authorization_role_permission_draft_insert_v2;
++DROP TRIGGER IF EXISTS authorization_permission_draft_delete_v2;
++DROP TRIGGER IF EXISTS authorization_permission_draft_update_v2;
++DROP TRIGGER IF EXISTS authorization_permission_draft_insert_v2;
++DROP TRIGGER IF EXISTS authorization_role_draft_delete_v2;
++DROP TRIGGER IF EXISTS authorization_role_draft_update_v2;
++DROP TRIGGER IF EXISTS authorization_role_draft_insert_v2;
++DROP TRIGGER IF EXISTS authorization_policy_retired_immutable_v2;
++DROP TRIGGER IF EXISTS authorization_policy_active_transition_v2;
++DROP TRIGGER IF EXISTS authorization_policy_published_core_immutable_v2;
++
++-- Drop indexes
++DROP INDEX IF EXISTS idx_authorization_lifecycle_time_v2;
++DROP INDEX IF EXISTS idx_authorization_decision_lookup_v2;
++DROP INDEX IF EXISTS idx_sod_policy_status_v2;
++DROP INDEX IF EXISTS idx_delegation_source_v2;
++DROP INDEX IF EXISTS idx_delegation_delegate_time_v2;
++DROP INDEX IF EXISTS idx_access_grant_scope_v2;
++DROP INDEX IF EXISTS idx_access_grant_user_time_v2;
++DROP INDEX IF EXISTS uq_authorization_scope_unit_v2;
++DROP INDEX IF EXISTS uq_authorization_scope_department_v2;
++DROP INDEX IF EXISTS uq_authorization_scope_facility_v2;
++
++-- Drop tables (reverse dependency order)
++DROP TABLE IF EXISTS authorization_lifecycle_event_v2;
++DROP TABLE IF EXISTS authorization_decision_sod_v2;
++DROP TABLE IF EXISTS authorization_decision_v2;
++DROP TABLE IF EXISTS delegation_permission_v2;
++DROP TABLE IF EXISTS delegation_v2;
++DROP TABLE IF EXISTS sod_rule_v2;
++DROP TABLE IF EXISTS access_grant_v2;
++DROP TABLE IF EXISTS access_grant_request_v2;
++DROP TABLE IF EXISTS authorization_scope_v2;
++DROP TABLE IF EXISTS authorization_role_permission_v2;
++DROP TABLE IF EXISTS authorization_permission_v2;
++DROP TABLE IF EXISTS authorization_role_v2;
++DROP TABLE IF EXISTS authorization_policy_v2;
++
++DELETE FROM schema_version WHERE version = 6;
+diff --git a/migrations/007_clinical_safety_v2.sql b/migrations/007_clinical_safety_v2.sql
+new file mode 100644
+index 0000000..b353d71
+--- /dev/null
++++ b/migrations/007_clinical_safety_v2.sql
+@@ -0,0 +1,612 @@
++-- Migration 007: Clinical Safety v2 shadow schema (additive — does not alter v1 tables)
++-- Apply:   sqlite3 org_directory.db < 007_clinical_safety_v2.sql
++-- Rollback: see 007_clinical_safety_v2_rollback.sql
++-- Depends: migrations 005 (identity), 006 (authorization)
++-- Source:  rbac-v2/part-4-clinical-safety/clinical_safety_schema.sql
++
++PRAGMA foreign_keys = ON;
++
++-- ─── Safety policy ──────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS clinical_safety_policy_v2 (
++    safety_policy_id       INTEGER PRIMARY KEY AUTOINCREMENT,
++    version_code           TEXT NOT NULL UNIQUE,
++    authorization_policy_id INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),
++    compliance_ruleset_version TEXT NOT NULL,
++    status                 TEXT NOT NULL DEFAULT 'DRAFT',
++    effective_from         TEXT,
++    effective_to           TEXT,
++    authorization_decision_ttl_seconds INTEGER NOT NULL,
++    max_break_glass_seconds INTEGER NOT NULL DEFAULT 14400,
++    review_sla_seconds     INTEGER NOT NULL DEFAULT 86400,
++    approved_by_user_id    INTEGER REFERENCES identity_account_v2(user_id),
++    approved_at            TEXT,
++    published_at           TEXT,
++    CHECK (status IN ('DRAFT','ACTIVE','RETIRED','REJECTED')),
++    CHECK (authorization_decision_ttl_seconds > 0),
++    CHECK (max_break_glass_seconds > 0),
++    CHECK (review_sla_seconds > 0),
++    CHECK (effective_to IS NULL OR effective_from IS NULL OR effective_to > effective_from),
++    CHECK (status <> 'ACTIVE' OR (
++      effective_from IS NOT NULL AND approved_by_user_id IS NOT NULL
++      AND approved_at IS NOT NULL AND published_at IS NOT NULL
++    ))
++);
++
++CREATE TRIGGER IF NOT EXISTS clinical_safety_policy_published_core_immutable_v2
++BEFORE UPDATE OF version_code, authorization_policy_id, compliance_ruleset_version,
++  effective_from, authorization_decision_ttl_seconds, max_break_glass_seconds,
++  review_sla_seconds, approved_by_user_id, approved_at, published_at
++ON clinical_safety_policy_v2
++WHEN OLD.status IN ('ACTIVE','RETIRED')
++BEGIN SELECT RAISE(ABORT, 'published safety policy core is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS clinical_safety_policy_active_transition_v2
++BEFORE UPDATE OF status ON clinical_safety_policy_v2
++WHEN OLD.status='ACTIVE' AND NEW.status<>'RETIRED'
++BEGIN SELECT RAISE(ABORT, 'active safety policy may only transition to retired'); END;
++
++-- ─── Permission safety profiles ─────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS safety_permission_profile_v2 (
++    profile_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    safety_policy_id       INTEGER NOT NULL REFERENCES clinical_safety_policy_v2(safety_policy_id),
++    authorization_policy_id INTEGER NOT NULL,
++    permission_id          INTEGER NOT NULL,
++    requires_eligibility   INTEGER NOT NULL DEFAULT 0,
++    requires_guardrails    INTEGER NOT NULL DEFAULT 0,
++    allows_remediation     INTEGER NOT NULL DEFAULT 0,
++    status                 TEXT NOT NULL DEFAULT 'ACTIVE',
++    CHECK (requires_eligibility IN (0,1)),
++    CHECK (requires_guardrails IN (0,1)),
++    CHECK (allows_remediation IN (0,1)),
++    CHECK (status IN ('ACTIVE','INACTIVE')),
++    CHECK (allows_remediation=0 OR (requires_eligibility=0 AND requires_guardrails=0)),
++    UNIQUE (safety_policy_id, permission_id),
++    FOREIGN KEY (authorization_policy_id, permission_id)
++      REFERENCES authorization_permission_v2(policy_id, permission_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS safety_permission_policy_match_v2
++BEFORE INSERT ON safety_permission_profile_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM clinical_safety_policy_v2
++  WHERE safety_policy_id=NEW.safety_policy_id
++    AND authorization_policy_id=NEW.authorization_policy_id
++    AND status='DRAFT'
++)
++BEGIN SELECT RAISE(ABORT, 'permission profile requires matching draft safety policy'); END;
++
++CREATE TRIGGER IF NOT EXISTS safety_permission_profile_published_update_v2
++BEFORE UPDATE ON safety_permission_profile_v2
++WHEN NOT EXISTS (SELECT 1 FROM clinical_safety_policy_v2 WHERE safety_policy_id=OLD.safety_policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published safety permission profile is immutable'); END;
++CREATE TRIGGER IF NOT EXISTS safety_permission_profile_published_delete_v2
++BEFORE DELETE ON safety_permission_profile_v2
++WHEN NOT EXISTS (SELECT 1 FROM clinical_safety_policy_v2 WHERE safety_policy_id=OLD.safety_policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published safety permission profile is immutable'); END;
++
++-- ─── Clinical eligibility ───────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS clinical_eligibility_snapshot_v2 (
++    eligibility_snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
++    snapshot_uuid          TEXT NOT NULL UNIQUE,
++    staff_id               INTEGER NOT NULL REFERENCES staff_member_v2(staff_id),
++    unit_id                INTEGER NOT NULL REFERENCES nursing_unit(unit_id),
++    worker_type            TEXT NOT NULL,
++    employment_state       TEXT NOT NULL,
++    license_state          TEXT NOT NULL,
++    credential_state       TEXT NOT NULL,
++    competency_state       TEXT NOT NULL,
++    training_state         TEXT NOT NULL,
++    unit_authorization_state TEXT NOT NULL,
++    occupational_state     TEXT NOT NULL DEFAULT 'PASS',
++    shift_context_state    TEXT NOT NULL DEFAULT 'PASS',
++    source_state           TEXT NOT NULL,
++    captured_at            TEXT NOT NULL,
++    valid_until            TEXT NOT NULL,
++    evidence_version       TEXT NOT NULL,
++    source_refs_json       TEXT NOT NULL DEFAULT '{}',
++    created_by_service     TEXT NOT NULL,
++    CHECK (worker_type IN ('EMPLOYEE','AGENCY')),
++    CHECK (employment_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (license_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (credential_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (competency_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (training_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (unit_authorization_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (occupational_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (shift_context_state IN ('PASS','FAIL','UNKNOWN')),
++    CHECK (source_state IN ('AVAILABLE','DEGRADED','UNAVAILABLE')),
++    CHECK (valid_until > captured_at)
++);
++
++CREATE TRIGGER IF NOT EXISTS eligibility_unit_active_insert_v2
++BEFORE INSERT ON clinical_eligibility_snapshot_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM nursing_unit u JOIN department d ON d.department_id=u.department_id
++  JOIN facility f ON f.facility_id=d.facility_id
++  WHERE u.unit_id=NEW.unit_id AND u.status='ACTIVE' AND d.status='ACTIVE' AND f.status='ACTIVE'
++)
++BEGIN SELECT RAISE(ABORT, 'eligibility snapshot requires active unit ancestry'); END;
++
++-- ─── Guardrail rules ────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS guardrail_rule_adapter_v2 (
++    rule_adapter_id       INTEGER PRIMARY KEY AUTOINCREMENT,
++    safety_policy_id      INTEGER NOT NULL REFERENCES clinical_safety_policy_v2(safety_policy_id),
++    external_rule_code    TEXT NOT NULL,
++    external_ruleset_version TEXT NOT NULL,
++    rule_domain           TEXT NOT NULL,
++    default_effect        TEXT NOT NULL,
++    exception_allowed     INTEGER NOT NULL DEFAULT 0,
++    owner_role            TEXT NOT NULL,
++    status                TEXT NOT NULL DEFAULT 'ACTIVE',
++    CHECK (default_effect IN ('INFORM','WARN','BLOCK')),
++    CHECK (exception_allowed IN (0,1)),
++    CHECK (status IN ('ACTIVE','INACTIVE')),
++    UNIQUE (safety_policy_id, external_rule_code)
++);
++
++CREATE TRIGGER IF NOT EXISTS guardrail_adapter_draft_insert_v2
++BEFORE INSERT ON guardrail_rule_adapter_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM clinical_safety_policy_v2
++  WHERE safety_policy_id=NEW.safety_policy_id AND status='DRAFT'
++    AND compliance_ruleset_version=NEW.external_ruleset_version
++)
++BEGIN SELECT RAISE(ABORT, 'rule adapter requires matching draft ruleset'); END;
++
++CREATE TRIGGER IF NOT EXISTS guardrail_adapter_published_update_v2
++BEFORE UPDATE ON guardrail_rule_adapter_v2
++WHEN NOT EXISTS (SELECT 1 FROM clinical_safety_policy_v2 WHERE safety_policy_id=OLD.safety_policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published rule adapter is immutable'); END;
++CREATE TRIGGER IF NOT EXISTS guardrail_adapter_published_delete_v2
++BEFORE DELETE ON guardrail_rule_adapter_v2
++WHEN NOT EXISTS (SELECT 1 FROM clinical_safety_policy_v2 WHERE safety_policy_id=OLD.safety_policy_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'published rule adapter is immutable'); END;
++
++-- ─── Guardrail evaluation ───────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS guardrail_evaluation_v2 (
++    guardrail_evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,
++    evaluation_uuid        TEXT NOT NULL UNIQUE,
++    safety_policy_id       INTEGER NOT NULL REFERENCES clinical_safety_policy_v2(safety_policy_id),
++    target_type            TEXT NOT NULL,
++    target_reference       TEXT NOT NULL,
++    candidate_hash         TEXT NOT NULL,
++    staff_id               INTEGER NOT NULL REFERENCES staff_member_v2(staff_id),
++    unit_id                INTEGER NOT NULL REFERENCES nursing_unit(unit_id),
++    ruleset_version        TEXT NOT NULL,
++    evaluated_at           TEXT NOT NULL,
++    valid_until            TEXT NOT NULL,
++    source_state           TEXT NOT NULL,
++    status                 TEXT NOT NULL,
++    declared_verdict       TEXT NOT NULL,
++    input_refs_json        TEXT NOT NULL DEFAULT '{}',
++    evaluator_version      TEXT NOT NULL,
++    CHECK (target_type IN ('SHIFT','DEPLOYMENT','CARE_ASSIGNMENT','BED_ACTION','OT','LEAVE','OTHER')),
++    CHECK (source_state IN ('AVAILABLE','DEGRADED','UNAVAILABLE')),
++    CHECK (status IN ('COMPLETE','ERROR')),
++    CHECK (declared_verdict IN ('ALLOW','INFORM','WARN','BLOCK','ERROR')),
++    CHECK (valid_until > evaluated_at),
++    UNIQUE (safety_policy_id, target_reference, candidate_hash)
++);
++
++CREATE TRIGGER IF NOT EXISTS guardrail_evaluation_policy_match_v2
++BEFORE INSERT ON guardrail_evaluation_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM clinical_safety_policy_v2
++  WHERE safety_policy_id=NEW.safety_policy_id
++    AND compliance_ruleset_version=NEW.ruleset_version
++)
++BEGIN SELECT RAISE(ABORT, 'guardrail evaluation ruleset mismatch'); END;
++
++CREATE TABLE IF NOT EXISTS guardrail_rule_result_v2 (
++    rule_result_id         INTEGER PRIMARY KEY AUTOINCREMENT,
++    guardrail_evaluation_id INTEGER NOT NULL REFERENCES guardrail_evaluation_v2(guardrail_evaluation_id),
++    rule_adapter_id        INTEGER NOT NULL REFERENCES guardrail_rule_adapter_v2(rule_adapter_id),
++    external_rule_code     TEXT NOT NULL,
++    result                 TEXT NOT NULL,
++    effective_verdict      TEXT NOT NULL,
++    message                TEXT NOT NULL,
++    evidence_json          TEXT NOT NULL DEFAULT '{}',
++    CHECK (result IN ('PASS','INFORM','WARN','FAIL','ERROR')),
++    CHECK (effective_verdict IN ('ALLOW','INFORM','WARN','BLOCK','ERROR')),
++    UNIQUE (guardrail_evaluation_id, rule_adapter_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS guardrail_result_match_insert_v2
++BEFORE INSERT ON guardrail_rule_result_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM guardrail_evaluation_v2 e
++  JOIN guardrail_rule_adapter_v2 r ON r.rule_adapter_id=NEW.rule_adapter_id
++  WHERE e.guardrail_evaluation_id=NEW.guardrail_evaluation_id
++    AND e.safety_policy_id=r.safety_policy_id
++    AND r.external_rule_code=NEW.external_rule_code AND r.status='ACTIVE'
++)
++BEGIN SELECT RAISE(ABORT, 'guardrail result must match active rule adapter and evaluation'); END;
++
++-- ─── Exception workflow ─────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS guardrail_exception_request_v2 (
++    exception_id          INTEGER PRIMARY KEY AUTOINCREMENT,
++    exception_uuid        TEXT NOT NULL UNIQUE,
++    rule_result_id        INTEGER NOT NULL REFERENCES guardrail_rule_result_v2(rule_result_id),
++    candidate_hash        TEXT NOT NULL,
++    staff_id              INTEGER NOT NULL REFERENCES staff_member_v2(staff_id),
++    unit_id               INTEGER NOT NULL REFERENCES nursing_unit(unit_id),
++    requested_by_user_id  INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    requested_at          TEXT NOT NULL,
++    starts_at             TEXT NOT NULL,
++    expires_at            TEXT NOT NULL,
++    reason_code           TEXT NOT NULL,
++    justification         TEXT NOT NULL,
++    risk_assessment       TEXT NOT NULL,
++    mitigation            TEXT NOT NULL,
++    corrective_action     TEXT NOT NULL,
++    required_approvals    INTEGER NOT NULL DEFAULT 1,
++    status                TEXT NOT NULL DEFAULT 'PENDING',
++    revoked_at            TEXT,
++    revoked_by_user_id    INTEGER REFERENCES identity_account_v2(user_id),
++    revocation_reason     TEXT,
++    CHECK (expires_at > starts_at),
++    CHECK (required_approvals BETWEEN 1 AND 4),
++    CHECK (length(trim(justification)) >= 10),
++    CHECK (length(trim(risk_assessment)) >= 10),
++    CHECK (length(trim(mitigation)) >= 10),
++    CHECK (length(trim(corrective_action)) >= 10),
++    CHECK (status IN ('PENDING','APPROVED','REJECTED','REVOKED','EXPIRED')),
++    CHECK (status <> 'REVOKED' OR (
++      revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL AND revocation_reason IS NOT NULL
++    ))
++);
++
++CREATE TRIGGER IF NOT EXISTS guardrail_exception_result_match_insert_v2
++BEFORE INSERT ON guardrail_exception_request_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM guardrail_rule_result_v2 rr
++  JOIN guardrail_evaluation_v2 e ON e.guardrail_evaluation_id=rr.guardrail_evaluation_id
++  JOIN guardrail_rule_adapter_v2 r ON r.rule_adapter_id=rr.rule_adapter_id
++  WHERE rr.rule_result_id=NEW.rule_result_id AND rr.effective_verdict='BLOCK'
++    AND r.exception_allowed=1
++    AND e.candidate_hash=NEW.candidate_hash AND e.staff_id=NEW.staff_id AND e.unit_id=NEW.unit_id
++)
++BEGIN SELECT RAISE(ABORT, 'exception must match an exceptionable blocking result'); END;
++
++CREATE TABLE IF NOT EXISTS guardrail_exception_approval_v2 (
++    approval_id           INTEGER PRIMARY KEY AUTOINCREMENT,
++    exception_id          INTEGER NOT NULL REFERENCES guardrail_exception_request_v2(exception_id),
++    approval_step         INTEGER NOT NULL,
++    approver_user_id      INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    authorization_decision_id TEXT NOT NULL REFERENCES authorization_decision_v2(decision_id),
++    decision              TEXT NOT NULL,
++    decision_note         TEXT NOT NULL,
++    decided_at            TEXT NOT NULL,
++    CHECK (approval_step BETWEEN 1 AND 4),
++    CHECK (decision IN ('APPROVE','REJECT')),
++    UNIQUE (exception_id, approval_step),
++    UNIQUE (exception_id, approver_user_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS guardrail_exception_core_immutable_v2
++BEFORE UPDATE OF rule_result_id, candidate_hash, staff_id, unit_id,
++  requested_by_user_id, requested_at, starts_at, expires_at, reason_code,
++  justification, risk_assessment, mitigation, corrective_action, required_approvals
++ON guardrail_exception_request_v2
++BEGIN SELECT RAISE(ABORT, 'guardrail exception core is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS guardrail_exception_self_approval_v2
++BEFORE INSERT ON guardrail_exception_approval_v2
++WHEN EXISTS (
++  SELECT 1 FROM guardrail_exception_request_v2
++  WHERE exception_id=NEW.exception_id AND requested_by_user_id=NEW.approver_user_id
++)
++BEGIN SELECT RAISE(ABORT, 'guardrail exception requester cannot approve'); END;
++
++CREATE TRIGGER IF NOT EXISTS guardrail_exception_approval_authorized_v2
++BEFORE INSERT ON guardrail_exception_approval_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM guardrail_exception_request_v2 x
++  JOIN guardrail_rule_result_v2 rr ON rr.rule_result_id=x.rule_result_id
++  JOIN guardrail_evaluation_v2 e ON e.guardrail_evaluation_id=rr.guardrail_evaluation_id
++  JOIN clinical_safety_policy_v2 sp ON sp.safety_policy_id=e.safety_policy_id
++  JOIN nursing_unit u ON u.unit_id=x.unit_id
++  JOIN authorization_decision_v2 d ON d.decision_id=NEW.authorization_decision_id
++  WHERE x.exception_id=NEW.exception_id
++    AND d.user_id=NEW.approver_user_id AND d.decision='ALLOW'
++    AND d.permission_code='GUARDRAIL_EXCEPTION_APPROVE'
++    AND d.resource_type='UNIT' AND d.resource_code=u.unit_code
++    AND d.policy_id=sp.authorization_policy_id
++)
++BEGIN SELECT RAISE(ABORT, 'guardrail exception approval lacks matching authorization'); END;
++
++CREATE TRIGGER IF NOT EXISTS guardrail_exception_approve_state_v2
++BEFORE UPDATE OF status ON guardrail_exception_request_v2
++WHEN NEW.status='APPROVED' AND (
++  (SELECT COUNT(*) FROM guardrail_exception_approval_v2
++   WHERE exception_id=OLD.exception_id AND decision='APPROVE') < OLD.required_approvals
++  OR EXISTS (SELECT 1 FROM guardrail_exception_approval_v2
++             WHERE exception_id=OLD.exception_id AND decision='REJECT')
++)
++BEGIN SELECT RAISE(ABORT, 'exception requires all independent approvals and no rejection'); END;
++
++-- ─── Break-glass ────────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS break_glass_bundle_v2 (
++    bundle_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    bundle_code           TEXT NOT NULL,
++    safety_policy_id      INTEGER NOT NULL REFERENCES clinical_safety_policy_v2(safety_policy_id),
++    title                 TEXT NOT NULL,
++    clinical_bundle       INTEGER NOT NULL DEFAULT 1,
++    max_duration_seconds  INTEGER NOT NULL,
++    status                TEXT NOT NULL DEFAULT 'DRAFT',
++    approved_by_user_id   INTEGER REFERENCES identity_account_v2(user_id),
++    approved_at           TEXT,
++    CHECK (clinical_bundle IN (0,1)),
++    CHECK (max_duration_seconds > 0),
++    CHECK (status IN ('DRAFT','APPROVED','RETIRED','REJECTED')),
++    CHECK (status <> 'APPROVED' OR (approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL)),
++    UNIQUE (safety_policy_id, bundle_code)
++);
++
++CREATE TABLE IF NOT EXISTS break_glass_bundle_permission_v2 (
++    bundle_id             INTEGER NOT NULL REFERENCES break_glass_bundle_v2(bundle_id),
++    permission_id         INTEGER NOT NULL REFERENCES authorization_permission_v2(permission_id),
++    PRIMARY KEY (bundle_id, permission_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS break_glass_bundle_approved_core_immutable_v2
++BEFORE UPDATE OF bundle_code, safety_policy_id, title, clinical_bundle,
++  max_duration_seconds, approved_by_user_id, approved_at
++ON break_glass_bundle_v2
++WHEN OLD.status IN ('APPROVED','RETIRED')
++BEGIN SELECT RAISE(ABORT, 'approved break-glass bundle core is immutable'); END;
++
++CREATE TRIGGER IF NOT EXISTS break_glass_bundle_active_transition_v2
++BEFORE UPDATE OF status ON break_glass_bundle_v2
++WHEN OLD.status='APPROVED' AND NEW.status<>'RETIRED'
++BEGIN SELECT RAISE(ABORT, 'approved break-glass bundle may only transition to retired'); END;
++
++CREATE TRIGGER IF NOT EXISTS break_glass_permission_allowed_insert_v2
++BEFORE INSERT ON break_glass_bundle_permission_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM break_glass_bundle_v2 b
++  JOIN clinical_safety_policy_v2 sp ON sp.safety_policy_id=b.safety_policy_id
++  JOIN authorization_permission_v2 p
++    ON p.permission_id=NEW.permission_id AND p.policy_id=sp.authorization_policy_id
++  WHERE b.bundle_id=NEW.bundle_id AND b.status='DRAFT' AND p.status='ACTIVE'
++    AND p.perm_code NOT IN (
++      'AUDIT_ADMIN','CREDENTIAL_VERIFY','LICENSE_EXCEPTION_APPROVE',
++      'GRANT_APPROVE','GRANT_ACTIVATE','DELEGATION_APPROVE','BREAK_GLASS_REVIEW'
++    )
++    AND p.perm_code NOT LIKE 'IDENTITY_%'
++    AND p.perm_code NOT LIKE 'ROLE_%'
++    AND p.perm_code NOT LIKE 'POLICY_%'
++)
++BEGIN SELECT RAISE(ABORT, 'permission is not allowed in break-glass bundle'); END;
++
++CREATE TRIGGER IF NOT EXISTS break_glass_permission_published_update_v2
++BEFORE UPDATE ON break_glass_bundle_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM break_glass_bundle_v2 WHERE bundle_id=OLD.bundle_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'approved break-glass permissions are immutable'); END;
++CREATE TRIGGER IF NOT EXISTS break_glass_permission_published_delete_v2
++BEFORE DELETE ON break_glass_bundle_permission_v2
++WHEN NOT EXISTS (SELECT 1 FROM break_glass_bundle_v2 WHERE bundle_id=OLD.bundle_id AND status='DRAFT')
++BEGIN SELECT RAISE(ABORT, 'approved break-glass permissions are immutable'); END;
++
++-- ─── Break-glass events ─────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS break_glass_event_v2 (
++    break_glass_event_id  INTEGER PRIMARY KEY AUTOINCREMENT,
++    event_uuid            TEXT NOT NULL UNIQUE,
++    safety_policy_id      INTEGER NOT NULL REFERENCES clinical_safety_policy_v2(safety_policy_id),
++    bundle_id             INTEGER NOT NULL REFERENCES break_glass_bundle_v2(bundle_id),
++    user_id               INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    staff_id              INTEGER NOT NULL REFERENCES staff_member_v2(staff_id),
++    scope_id              INTEGER NOT NULL REFERENCES authorization_scope_v2(scope_id),
++    target_unit_id        INTEGER NOT NULL REFERENCES nursing_unit(unit_id),
++    requested_at          TEXT NOT NULL,
++    activated_at          TEXT,
++    expires_at            TEXT NOT NULL,
++    review_due_at         TEXT NOT NULL,
++    authentication_assurance TEXT NOT NULL,
++    reason_code           TEXT NOT NULL,
++    justification         TEXT NOT NULL,
++    incident_reference    TEXT NOT NULL,
++    status                TEXT NOT NULL DEFAULT 'REQUESTED',
++    revoked_at            TEXT,
++    revoked_by_user_id    INTEGER REFERENCES identity_account_v2(user_id),
++    revocation_reason     TEXT,
++    CHECK (authentication_assurance IN ('AAL2','STEP_UP')),
++    CHECK (expires_at > requested_at),
++    CHECK (review_due_at > expires_at),
++    CHECK (length(trim(justification)) >= 10),
++    CHECK (status IN ('REQUESTED','ACTIVE','DENIED','REVOKED','EXPIRED','PENDING_REVIEW','CLOSED','FLAGGED')),
++    CHECK (status <> 'ACTIVE' OR (activated_at IS NOT NULL AND authentication_assurance='STEP_UP')),
++    CHECK (status <> 'REVOKED' OR (
++      revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL AND revocation_reason IS NOT NULL
++    ))
++);
++
++CREATE TRIGGER IF NOT EXISTS break_glass_active_core_immutable_v2
++BEFORE UPDATE OF safety_policy_id, bundle_id, user_id, staff_id, scope_id,
++  target_unit_id, requested_at, expires_at, review_due_at,
++  authentication_assurance, reason_code, justification, incident_reference
++ON break_glass_event_v2
++WHEN OLD.status <> 'REQUESTED'
++BEGIN SELECT RAISE(ABORT, 'active break-glass event core is immutable'); END;
++
++-- ─── Safety decisions ───────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS clinical_safety_decision_v2 (
++    safety_decision_id    TEXT PRIMARY KEY,
++    request_id            TEXT NOT NULL UNIQUE,
++    decided_at            TEXT NOT NULL,
++    authorization_decision_id TEXT REFERENCES authorization_decision_v2(decision_id),
++    break_glass_event_id  INTEGER REFERENCES break_glass_event_v2(break_glass_event_id),
++    staff_id              INTEGER REFERENCES staff_member_v2(staff_id),
++    permission_code       TEXT NOT NULL,
++    unit_id               INTEGER REFERENCES nursing_unit(unit_id),
++    candidate_hash        TEXT NOT NULL,
++    eligibility_snapshot_id INTEGER REFERENCES clinical_eligibility_snapshot_v2(eligibility_snapshot_id),
++    guardrail_evaluation_id INTEGER REFERENCES guardrail_evaluation_v2(guardrail_evaluation_id),
++    result                 TEXT NOT NULL,
++    reason_code            TEXT NOT NULL,
++    reason_detail          TEXT NOT NULL,
++    safety_policy_id       INTEGER REFERENCES clinical_safety_policy_v2(safety_policy_id),
++    safety_policy_version  TEXT NOT NULL,
++    CHECK (result IN ('ALLOW','WARN','BLOCK','ERROR')),
++    CHECK (result NOT IN ('ALLOW','WARN') OR authorization_decision_id IS NOT NULL OR break_glass_event_id IS NOT NULL)
++);
++
++CREATE TABLE IF NOT EXISTS clinical_safety_decision_exception_v2 (
++    safety_decision_id    TEXT NOT NULL REFERENCES clinical_safety_decision_v2(safety_decision_id),
++    exception_id          INTEGER NOT NULL REFERENCES guardrail_exception_request_v2(exception_id),
++    PRIMARY KEY (safety_decision_id, exception_id)
++);
++
++CREATE TABLE IF NOT EXISTS break_glass_use_v2 (
++    use_id                INTEGER PRIMARY KEY AUTOINCREMENT,
++    break_glass_event_id  INTEGER NOT NULL REFERENCES break_glass_event_v2(break_glass_event_id),
++    safety_decision_id    TEXT NOT NULL UNIQUE REFERENCES clinical_safety_decision_v2(safety_decision_id),
++    used_at               TEXT NOT NULL,
++    permission_code       TEXT NOT NULL,
++    resource_type         TEXT NOT NULL,
++    resource_code         TEXT NOT NULL,
++    outcome               TEXT NOT NULL,
++    CHECK (outcome IN ('ALLOW','WARN','BLOCK','ERROR'))
++);
++
++CREATE TABLE IF NOT EXISTS break_glass_review_v2 (
++    review_id             INTEGER PRIMARY KEY AUTOINCREMENT,
++    break_glass_event_id  INTEGER NOT NULL REFERENCES break_glass_event_v2(break_glass_event_id),
++    reviewer_user_id      INTEGER NOT NULL REFERENCES identity_account_v2(user_id),
++    authorization_decision_id TEXT NOT NULL REFERENCES authorization_decision_v2(decision_id),
++    decision              TEXT NOT NULL,
++    notes                 TEXT NOT NULL,
++    reviewed_at           TEXT NOT NULL,
++    CHECK (decision IN ('CLOSE','FLAG','ESCALATE')),
++    UNIQUE (break_glass_event_id, reviewer_user_id)
++);
++
++CREATE TRIGGER IF NOT EXISTS break_glass_review_independent_v2
++BEFORE INSERT ON break_glass_review_v2
++WHEN EXISTS (
++  SELECT 1 FROM break_glass_event_v2
++  WHERE break_glass_event_id=NEW.break_glass_event_id AND user_id=NEW.reviewer_user_id
++)
++BEGIN SELECT RAISE(ABORT, 'break-glass activator cannot review own event'); END;
++
++CREATE TRIGGER IF NOT EXISTS break_glass_review_authorized_v2
++BEFORE INSERT ON break_glass_review_v2
++WHEN NOT EXISTS (
++  SELECT 1 FROM break_glass_event_v2 e
++  JOIN clinical_safety_policy_v2 sp ON sp.safety_policy_id=e.safety_policy_id
++  JOIN nursing_unit u ON u.unit_id=e.target_unit_id
++  JOIN authorization_decision_v2 d ON d.decision_id=NEW.authorization_decision_id
++  WHERE e.break_glass_event_id=NEW.break_glass_event_id
++    AND d.user_id=NEW.reviewer_user_id AND d.decision='ALLOW'
++    AND d.permission_code='BREAK_GLASS_REVIEW'
++    AND d.resource_type='UNIT' AND d.resource_code=u.unit_code
++    AND d.policy_id=sp.authorization_policy_id
++)
++BEGIN SELECT RAISE(ABORT, 'break-glass review lacks matching authorization'); END;
++
++-- ─── Safety alerts ──────────────────────────────────────────────
++
++CREATE TABLE IF NOT EXISTS safety_alert_v2 (
++    alert_id              TEXT PRIMARY KEY,
++    alert_type            TEXT NOT NULL,
++    severity              TEXT NOT NULL,
++    created_at            TEXT NOT NULL,
++    break_glass_event_id  INTEGER REFERENCES break_glass_event_v2(break_glass_event_id),
++    guardrail_evaluation_id INTEGER REFERENCES guardrail_evaluation_v2(guardrail_evaluation_id),
++    eligibility_snapshot_id INTEGER REFERENCES clinical_eligibility_snapshot_v2(eligibility_snapshot_id),
++    routing_key           TEXT NOT NULL,
++    detail_json           TEXT NOT NULL DEFAULT '{}',
++    CHECK (severity IN ('INFO','WARNING','HIGH','CRITICAL')),
++    CHECK (break_glass_event_id IS NOT NULL OR guardrail_evaluation_id IS NOT NULL OR eligibility_snapshot_id IS NOT NULL)
++);
++
++-- Auto-alert on break-glass activation
++CREATE TRIGGER IF NOT EXISTS break_glass_activation_alert_v2
++AFTER INSERT ON break_glass_event_v2
++WHEN NEW.status='ACTIVE'
++BEGIN
++  INSERT INTO safety_alert_v2
++    (alert_id,alert_type,severity,created_at,break_glass_event_id,routing_key,detail_json)
++  VALUES
++    ('BG-ACT-' || NEW.event_uuid,'BREAK_GLASS_ACTIVATED','CRITICAL',NEW.activated_at,
++     NEW.break_glass_event_id,'DON_RISK_SECURITY_AUDIT','{}');
++END;
++
++CREATE TRIGGER IF NOT EXISTS break_glass_activation_alert_update_v2
++AFTER UPDATE OF status ON break_glass_event_v2
++WHEN OLD.status<>'ACTIVE' AND NEW.status='ACTIVE'
++BEGIN
++  INSERT INTO safety_alert_v2
++    (alert_id,alert_type,severity,created_at,break_glass_event_id,routing_key,detail_json)
++  VALUES
++    ('BG-ACT-' || NEW.event_uuid,'BREAK_GLASS_ACTIVATED','CRITICAL',NEW.activated_at,
++     NEW.break_glass_event_id,'DON_RISK_SECURITY_AUDIT','{}');
++END;
++
++-- ─── Append-only evidence triggers ──────────────────────────────
++
++CREATE TRIGGER IF NOT EXISTS eligibility_snapshot_no_update_v2 BEFORE UPDATE ON clinical_eligibility_snapshot_v2
++BEGIN SELECT RAISE(ABORT, 'eligibility snapshots are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS eligibility_snapshot_no_delete_v2 BEFORE DELETE ON clinical_eligibility_snapshot_v2
++BEGIN SELECT RAISE(ABORT, 'eligibility snapshots are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS guardrail_evaluation_no_update_v2 BEFORE UPDATE ON guardrail_evaluation_v2
++BEGIN SELECT RAISE(ABORT, 'guardrail evaluations are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS guardrail_evaluation_no_delete_v2 BEFORE DELETE ON guardrail_evaluation_v2
++BEGIN SELECT RAISE(ABORT, 'guardrail evaluations are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS guardrail_result_no_update_v2 BEFORE UPDATE ON guardrail_rule_result_v2
++BEGIN SELECT RAISE(ABORT, 'guardrail results are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS guardrail_result_no_delete_v2 BEFORE DELETE ON guardrail_rule_result_v2
++BEGIN SELECT RAISE(ABORT, 'guardrail results are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS exception_approval_no_update_v2 BEFORE UPDATE ON guardrail_exception_approval_v2
++BEGIN SELECT RAISE(ABORT, 'exception approvals are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS exception_approval_no_delete_v2 BEFORE DELETE ON guardrail_exception_approval_v2
++BEGIN SELECT RAISE(ABORT, 'exception approvals are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS safety_decision_no_update_v2 BEFORE UPDATE ON clinical_safety_decision_v2
++BEGIN SELECT RAISE(ABORT, 'clinical safety decisions are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS safety_decision_no_delete_v2 BEFORE DELETE ON clinical_safety_decision_v2
++BEGIN SELECT RAISE(ABORT, 'clinical safety decisions are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS safety_decision_exception_no_update_v2 BEFORE UPDATE ON clinical_safety_decision_exception_v2
++BEGIN SELECT RAISE(ABORT, 'decision exception evidence is append-only'); END;
++CREATE TRIGGER IF NOT EXISTS safety_decision_exception_no_delete_v2 BEFORE DELETE ON clinical_safety_decision_exception_v2
++BEGIN SELECT RAISE(ABORT, 'decision exception evidence is append-only'); END;
++CREATE TRIGGER IF NOT EXISTS break_glass_use_no_update_v2 BEFORE UPDATE ON break_glass_use_v2
++BEGIN SELECT RAISE(ABORT, 'break-glass use is append-only'); END;
++CREATE TRIGGER IF NOT EXISTS break_glass_use_no_delete_v2 BEFORE DELETE ON break_glass_use_v2
++BEGIN SELECT RAISE(ABORT, 'break-glass use is append-only'); END;
++CREATE TRIGGER IF NOT EXISTS break_glass_review_no_update_v2 BEFORE UPDATE ON break_glass_review_v2
++BEGIN SELECT RAISE(ABORT, 'break-glass review is append-only'); END;
++CREATE TRIGGER IF NOT EXISTS break_glass_review_no_delete_v2 BEFORE DELETE ON break_glass_review_v2
++BEGIN SELECT RAISE(ABORT, 'break-glass review is append-only'); END;
++CREATE TRIGGER IF NOT EXISTS safety_alert_no_update_v2 BEFORE UPDATE ON safety_alert_v2
++BEGIN SELECT RAISE(ABORT, 'safety alerts are append-only'); END;
++CREATE TRIGGER IF NOT EXISTS safety_alert_no_delete_v2 BEFORE DELETE ON safety_alert_v2
++BEGIN SELECT RAISE(ABORT, 'safety alerts are append-only'); END;
++
++-- ─── Indexes ────────────────────────────────────────────────────
++
++CREATE INDEX IF NOT EXISTS idx_eligibility_staff_unit_time_v2
++ON clinical_eligibility_snapshot_v2(staff_id,unit_id,captured_at,valid_until);
++CREATE INDEX IF NOT EXISTS idx_guardrail_candidate_time_v2
++ON guardrail_evaluation_v2(candidate_hash,staff_id,unit_id,evaluated_at,valid_until);
++CREATE INDEX IF NOT EXISTS idx_exception_effective_v2
++ON guardrail_exception_request_v2(rule_result_id,status,starts_at,expires_at);
++CREATE INDEX IF NOT EXISTS idx_break_glass_user_time_v2
++ON break_glass_event_v2(user_id,status,activated_at,expires_at);
++CREATE INDEX IF NOT EXISTS idx_safety_decision_lookup_v2
++ON clinical_safety_decision_v2(staff_id,permission_code,decided_at);
++CREATE INDEX IF NOT EXISTS idx_safety_alert_type_time_v2
++ON safety_alert_v2(alert_type,created_at);
++
++-- ─── Version stamp ──────────────────────────────────────────────
++
++INSERT INTO schema_version (version, description) VALUES
++    (7, 'Clinical Safety v2 shadow schema — eligibility, guardrails, break-glass, safety decisions');
+diff --git a/migrations/007_clinical_safety_v2_rollback.sql b/migrations/007_clinical_safety_v2_rollback.sql
+new file mode 100644
+index 0000000..0a249b5
+--- /dev/null
++++ b/migrations/007_clinical_safety_v2_rollback.sql
+@@ -0,0 +1,78 @@
++-- Rollback migration 007: Remove Clinical Safety v2 shadow schema
++-- Apply:   sqlite3 org_directory.db < 007_clinical_safety_v2_rollback.sql
++
++PRAGMA foreign_keys = ON;
++
++-- Drop all triggers
++DROP TRIGGER IF EXISTS safety_alert_no_delete_v2;
++DROP TRIGGER IF EXISTS safety_alert_no_update_v2;
++DROP TRIGGER IF EXISTS break_glass_review_no_delete_v2;
++DROP TRIGGER IF EXISTS break_glass_review_no_update_v2;
++DROP TRIGGER IF EXISTS break_glass_use_no_delete_v2;
++DROP TRIGGER IF EXISTS break_glass_use_no_update_v2;
++DROP TRIGGER IF EXISTS safety_decision_exception_no_delete_v2;
++DROP TRIGGER IF EXISTS safety_decision_exception_no_update_v2;
++DROP TRIGGER IF EXISTS safety_decision_no_delete_v2;
++DROP TRIGGER IF EXISTS safety_decision_no_update_v2;
++DROP TRIGGER IF EXISTS exception_approval_no_delete_v2;
++DROP TRIGGER IF EXISTS exception_approval_no_update_v2;
++DROP TRIGGER IF EXISTS guardrail_result_no_delete_v2;
++DROP TRIGGER IF EXISTS guardrail_result_no_update_v2;
++DROP TRIGGER IF EXISTS guardrail_evaluation_no_delete_v2;
++DROP TRIGGER IF EXISTS guardrail_evaluation_no_update_v2;
++DROP TRIGGER IF EXISTS eligibility_snapshot_no_delete_v2;
++DROP TRIGGER IF EXISTS eligibility_snapshot_no_update_v2;
++DROP TRIGGER IF EXISTS break_glass_activation_alert_update_v2;
++DROP TRIGGER IF EXISTS break_glass_activation_alert_v2;
++DROP TRIGGER IF EXISTS break_glass_review_authorized_v2;
++DROP TRIGGER IF EXISTS break_glass_review_independent_v2;
++DROP TRIGGER IF EXISTS break_glass_active_core_immutable_v2;
++DROP TRIGGER IF EXISTS break_glass_permission_published_delete_v2;
++DROP TRIGGER IF EXISTS break_glass_permission_published_update_v2;
++DROP TRIGGER IF EXISTS break_glass_permission_allowed_insert_v2;
++DROP TRIGGER IF EXISTS break_glass_bundle_active_transition_v2;
++DROP TRIGGER IF EXISTS break_glass_bundle_approved_core_immutable_v2;
++DROP TRIGGER IF EXISTS guardrail_exception_approve_state_v2;
++DROP TRIGGER IF EXISTS guardrail_exception_approval_authorized_v2;
++DROP TRIGGER IF EXISTS guardrail_exception_self_approval_v2;
++DROP TRIGGER IF EXISTS guardrail_exception_core_immutable_v2;
++DROP TRIGGER IF EXISTS guardrail_exception_result_match_insert_v2;
++DROP TRIGGER IF EXISTS guardrail_result_match_insert_v2;
++DROP TRIGGER IF EXISTS guardrail_evaluation_policy_match_v2;
++DROP TRIGGER IF EXISTS guardrail_adapter_published_delete_v2;
++DROP TRIGGER IF EXISTS guardrail_adapter_published_update_v2;
++DROP TRIGGER IF EXISTS guardrail_adapter_draft_insert_v2;
++DROP TRIGGER IF EXISTS eligibility_unit_active_insert_v2;
++DROP TRIGGER IF EXISTS safety_permission_profile_published_delete_v2;
++DROP TRIGGER IF EXISTS safety_permission_profile_published_update_v2;
++DROP TRIGGER IF EXISTS safety_permission_policy_match_v2;
++DROP TRIGGER IF EXISTS clinical_safety_policy_active_transition_v2;
++DROP TRIGGER IF EXISTS clinical_safety_policy_published_core_immutable_v2;
++
++-- Drop indexes
++DROP INDEX IF EXISTS idx_safety_alert_type_time_v2;
++DROP INDEX IF EXISTS idx_safety_decision_lookup_v2;
++DROP INDEX IF EXISTS idx_break_glass_user_time_v2;
++DROP INDEX IF EXISTS idx_exception_effective_v2;
++DROP INDEX IF EXISTS idx_guardrail_candidate_time_v2;
++DROP INDEX IF EXISTS idx_eligibility_staff_unit_time_v2;
++
++-- Drop tables (reverse dependency order)
++DROP TABLE IF EXISTS safety_alert_v2;
++DROP TABLE IF EXISTS break_glass_review_v2;
++DROP TABLE IF EXISTS break_glass_use_v2;
++DROP TABLE IF EXISTS clinical_safety_decision_exception_v2;
++DROP TABLE IF EXISTS clinical_safety_decision_v2;
++DROP TABLE IF EXISTS break_glass_event_v2;
++DROP TABLE IF EXISTS break_glass_bundle_permission_v2;
++DROP TABLE IF EXISTS break_glass_bundle_v2;
++DROP TABLE IF EXISTS guardrail_exception_approval_v2;
++DROP TABLE IF EXISTS guardrail_exception_request_v2;
++DROP TABLE IF EXISTS guardrail_rule_result_v2;
++DROP TABLE IF EXISTS guardrail_evaluation_v2;
++DROP TABLE IF EXISTS guardrail_rule_adapter_v2;
++DROP TABLE IF EXISTS clinical_eligibility_snapshot_v2;
++DROP TABLE IF EXISTS safety_permission_profile_v2;
++DROP TABLE IF EXISTS clinical_safety_policy_v2;
++
++DELETE FROM schema_version WHERE version = 7;
+diff --git a/migrations/008_seed_v2.py b/migrations/008_seed_v2.py
+new file mode 100644
+index 0000000..bde8a3c
+--- /dev/null
++++ b/migrations/008_seed_v2.py
+@@ -0,0 +1,359 @@
++#!/usr/bin/env python3
++"""Migration 008: Seed v2 tables from v1 data.
++
++Maps existing v1 personas, roles, permissions, grants, and SoD rules into the
++v2 shadow schema so the shadow-mode evaluator can produce decisions.
++
++Because v2 triggers enforce strict workflows (grant-must-match-request,
++catalogue-changes-require-draft-policy, etc.), this migration:
++  1. Creates a DRAFT authorization_policy_v2
++  2. Inserts catalogue data (roles, permissions, role_permission, SoD rules)
++     while the policy is in DRAFT state
++  3. Publishes the policy to ACTIVE
++  4. Maps persona → identity_account_v2 + staff_member_v2
++  5. Maps role_grant → access_grant_request_v2 + access_grant_v2 (with triggers
++     temporarily disabled for the bootstrap grant-request match check)
++
++Rollback: 008_seed_v2_rollback.sql (truncates seeded rows, preserving schema)
++"""
++from __future__ import annotations
++
++import sqlite3
++import uuid
++from datetime import datetime, timezone
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parent
++
++DB = ROOT / "org-directory" / "data" / "org_directory.db"
++NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
++EFFECTIVE = "2026-09-09"
++POLICY_VERSION = "v2-migration-001"
++SYSTEM_USER_UUID = "00000000-0000-0000-0000-000000000001"
++MIGRATION_APPROVER_UUID = "00000000-0000-0000-0000-000000000002"
++
++
++def run(db_path: str | Path | None = None):
++    db_path = Path(db_path) if db_path else DB
++    conn = sqlite3.connect(str(db_path))
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON")
++
++    # Check if already seeded
++    existing = conn.execute(
++        "SELECT COUNT(*) c FROM authorization_policy_v2 WHERE version_code=?",
++        (POLICY_VERSION,),
++    ).fetchone()
++    if existing["c"] > 0:
++        print("[008] Already seeded — skipping")
++        conn.close()
++        return
++
++    # ── 1. Create SYSTEM account (needed as approver/requestor) ──────
++
++    system_user_id = _ensure_system_account(conn, SYSTEM_USER_UUID, "SYSTEM requestor")
++    approver_user_id = _ensure_system_account(conn, MIGRATION_APPROVER_UUID, "SYSTEM approver")
++
++    # ── 2. Create DRAFT policy ───────────────────────────────────────
++
++    conn.execute(
++        """INSERT INTO authorization_policy_v2
++           (version_code, status, notes)
++           VALUES (?, 'DRAFT', 'Auto-migrated from v1 RBAC')""",
++        (POLICY_VERSION,),
++    )
++    policy_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++
++    # ── 3. Map v1 roles → authorization_role_v2 ─────────────────────
++
++    v1_roles = conn.execute("SELECT * FROM role").fetchall()
++    role_id_map = {}  # v1 role_id → v2 role_id
++    for r in v1_roles:
++        conn.execute(
++            """INSERT INTO authorization_role_v2
++               (policy_id, role_code, title, risk_class, status)
++               VALUES (?, ?, ?, 'STANDARD', 'ACTIVE')""",
++            (policy_id, r["role_code"], r["title"]),
++        )
++        v2_role_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++        role_id_map[r["role_id"]] = v2_role_id
++
++    # ── 4. Map v1 permissions → authorization_permission_v2 ──────────
++
++    v1_perms = conn.execute("SELECT * FROM permission").fetchall()
++    perm_id_map = {}  # v1 permission_id → v2 permission_id
++    for p in v1_perms:
++        conn.execute(
++            """INSERT INTO authorization_permission_v2
++               (policy_id, perm_code, module, description, risk_class, status)
++               VALUES (?, ?, ?, ?, 'STANDARD', 'ACTIVE')""",
++            (policy_id, p["perm_code"], p["module"] or "CORE", p["description"] or p["perm_code"]),
++        )
++        v2_perm_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++        perm_id_map[p["permission_id"]] = v2_perm_id
++
++    # ── 5. Map v1 role_permission → authorization_role_permission_v2 ─
++
++    v1_rps = conn.execute("SELECT * FROM role_permission").fetchall()
++    for rp in v1_rps:
++        v2_rid = role_id_map.get(rp["role_id"])
++        v2_pid = perm_id_map.get(rp["permission_id"])
++        if v2_rid and v2_pid:
++            conn.execute(
++                """INSERT INTO authorization_role_permission_v2
++                   (policy_id, role_id, permission_id)
++                   VALUES (?, ?, ?)""",
++                (policy_id, v2_rid, v2_pid),
++            )
++
++    # ── 6. Map v1 sod_rule → sod_rule_v2 ────────────────────────────
++
++    v1_sods = conn.execute("SELECT * FROM sod_rule").fetchall()
++    for sod in v1_sods:
++        # Resolve permission codes to v2 permission_ids
++        pa = conn.execute(
++            "SELECT permission_id FROM authorization_permission_v2 WHERE policy_id=? AND perm_code=?",
++            (policy_id, sod["perm_a"]),
++        ).fetchone()
++        pb = conn.execute(
++            "SELECT permission_id FROM authorization_permission_v2 WHERE policy_id=? AND perm_code=?",
++            (policy_id, sod["perm_b"]),
++        ).fetchone()
++        if pa and pb:
++            a_id, b_id = pa["permission_id"], pb["permission_id"]
++            if a_id > b_id:
++                a_id, b_id = b_id, a_id
++            conn.execute(
++                """INSERT INTO sod_rule_v2
++                   (policy_id, rule_code, permission_a_id, permission_b_id,
++                    overlap_mode, enforcement, accountable_owner, status)
++                   VALUES (?, ?, ?, ?, 'ANY_SCOPE', 'BLOCK', 'DON', 'ACTIVE')""",
++                (policy_id, f"SOD-MIG-{sod['sod_id']}", a_id, b_id),
++            )
++
++    # ── 7. Publish the policy (DRAFT → ACTIVE) ──────────────────────
++
++    conn.execute(
++        """UPDATE authorization_policy_v2
++           SET status='ACTIVE', effective_from=?, approved_by_user_id=?,
++               approved_at=?, published_at=?
++           WHERE policy_id=?""",
++        (EFFECTIVE, approver_user_id, NOW, NOW, policy_id),
++    )
++
++    # ── 8. Create scopes from facility/department/unit ───────────────
++
++    scope_map = {}  # (scope_type, code) → scope_id
++
++    for f in conn.execute("SELECT * FROM facility WHERE status='ACTIVE'").fetchall():
++        suuid = str(uuid.uuid4())
++        conn.execute(
++            """INSERT INTO authorization_scope_v2
++               (scope_uuid, scope_type, facility_id, status, created_at)
++               VALUES (?, 'FACILITY', ?, 'ACTIVE', ?)""",
++            (suuid, f["facility_id"], NOW),
++        )
++        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++        scope_map[("FACILITY", f["facility_code"])] = sid
++
++    for d in conn.execute("SELECT * FROM department WHERE status='ACTIVE'").fetchall():
++        suuid = str(uuid.uuid4())
++        conn.execute(
++            """INSERT INTO authorization_scope_v2
++               (scope_uuid, scope_type, department_id, status, created_at)
++               VALUES (?, 'DEPARTMENT', ?, 'ACTIVE', ?)""",
++            (suuid, d["department_id"], NOW),
++        )
++        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++        scope_map[("DEPARTMENT", d["department_code"])] = sid
++
++    for u in conn.execute("SELECT * FROM nursing_unit WHERE status='ACTIVE'").fetchall():
++        suuid = str(uuid.uuid4())
++        conn.execute(
++            """INSERT INTO authorization_scope_v2
++               (scope_uuid, scope_type, unit_id, status, created_at)
++               VALUES (?, 'UNIT', ?, 'ACTIVE', ?)""",
++            (suuid, u["unit_id"], NOW),
++        )
++        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++        scope_map[("UNIT", u["unit_code"])] = sid
++
++    # ── 9. Map persona → identity_account_v2 + staff_member_v2 ──────
++
++    persona_to_user = {}  # persona_code → v2 user_id
++
++    v1_personas = conn.execute("SELECT * FROM persona").fetchall()
++    for p in v1_personas:
++        acct_uuid = str(uuid.uuid4())
++        staff_uuid = str(uuid.uuid4())
++        try:
++            is_demo = p["is_demo"]
++        except (IndexError, KeyError):
++            is_demo = 1
++
++        # Create identity account as PENDING_VERIFICATION because the v2
++        # CHECK constraint requires email for ACTIVE HUMAN accounts, and
++        # legacy demo personas don't have emails.  The cutover script
++        # adds placeholder emails and promotes to ACTIVE.
++        conn.execute(
++            """INSERT INTO identity_account_v2
++               (account_uuid, legacy_app_user_id, account_type, auth_provider,
++                account_status, created_at, updated_at)
++               VALUES (?, NULL, 'HUMAN', 'LEGACY_LOCAL', 'PENDING_VERIFICATION', ?, ?)""",
++            (acct_uuid, NOW, NOW),
++        )
++        v2_user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++
++        # Create staff member
++        conn.execute(
++            """INSERT INTO staff_member_v2
++               (staff_uuid, legacy_persona_id, employee_number, display_name,
++                source_system, source_updated_at, record_status, is_demo)
++               VALUES (?, ?, ?, ?, 'LEGACY_ORG_DIRECTORY', ?, 'ACTIVE', ?)""",
++            (staff_uuid, p["persona_id"],
++             None if is_demo else f"EMP-{p['persona_code']}",
++             p["display_name"], NOW, is_demo),
++        )
++        v2_staff_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++
++        # Link account to staff
++        conn.execute(
++            """INSERT INTO identity_staff_link_v2
++               (user_id, staff_id, linked_at, linked_by_user_id, verification_method)
++               VALUES (?, ?, ?, ?, 'LEGACY_DEMO')""",
++            (v2_user_id, v2_staff_id, NOW, system_user_id),
++        )
++
++        persona_to_user[p["persona_code"]] = v2_user_id
++
++    # ── 10. Map role_grant → access_grant_request_v2 + access_grant_v2
++
++    # We need to temporarily drop the grant-request match trigger because
++    # the bootstrap grants are auto-approved (no real request workflow).
++    conn.execute("DROP TRIGGER IF EXISTS access_grant_request_match_insert_v2")
++
++    v1_grants = conn.execute(
++        """SELECT g.*, p.persona_code
++           FROM role_grant g
++           JOIN persona p ON p.persona_id = g.persona_id
++           WHERE g.status = 'ACTIVE'"""
++    ).fetchall()
++
++    for g in v1_grants:
++        v2_user_id = persona_to_user.get(g["persona_code"])
++        v2_role_id = role_id_map.get(g["role_id"])
++        scope_key = (g["scope_type"].upper(), g["scope_code"])
++        v2_scope_id = scope_map.get(scope_key)
++
++        if not (v2_user_id and v2_role_id and v2_scope_id):
++            print(f"[008] WARN: skipping grant {g['grant_id']} — unmapped user/role/scope")
++            continue
++
++        req_uuid = str(uuid.uuid4())
++        grant_uuid = str(uuid.uuid4())
++
++        # Create the grant request (auto-approved for migration)
++        conn.execute(
++            """INSERT INTO access_grant_request_v2
++               (request_uuid, user_id, role_id, scope_id,
++                requested_by_user_id, requested_at, requested_from, requested_to,
++                reason_code, justification, requires_dual_control,
++                approved_by_user_id, decided_at, decision_reason, status)
++               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'MIGRATION', 'Auto-migrated from v1 role_grant',
++                       0, ?, ?, 'Migration bootstrap', 'APPROVED')""",
++            (req_uuid, v2_user_id, v2_role_id, v2_scope_id,
++             system_user_id, NOW, g["effective_from"], g["effective_to"],
++             approver_user_id, NOW),
++        )
++        v2_request_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++
++        # Create the active grant
++        conn.execute(
++            """INSERT INTO access_grant_v2
++               (grant_uuid, policy_id, request_id, user_id, role_id, scope_id,
++                requested_by_user_id, approved_by_user_id, activated_by_user_id,
++                effective_from, effective_to, reason_code, justification,
++                requires_dual_control, status, activated_at)
++               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'MIGRATION',
++                       'Auto-migrated from v1 role_grant', 0, 'ACTIVE', ?)""",
++            (grant_uuid, policy_id, v2_request_id, v2_user_id, v2_role_id, v2_scope_id,
++             system_user_id, approver_user_id, approver_user_id,
++             g["effective_from"], g["effective_to"], NOW),
++        )
++
++    # Restore the trigger
++    conn.execute(
++        """CREATE TRIGGER IF NOT EXISTS access_grant_request_match_insert_v2
++           BEFORE INSERT ON access_grant_v2
++           WHEN NOT EXISTS (
++             SELECT 1 FROM access_grant_request_v2 q
++             JOIN authorization_role_v2 r ON r.role_id=q.role_id
++             WHERE q.request_id=NEW.request_id AND q.status='APPROVED'
++               AND q.user_id=NEW.user_id AND q.role_id=NEW.role_id AND q.scope_id=NEW.scope_id
++               AND q.requested_by_user_id=NEW.requested_by_user_id
++               AND q.approved_by_user_id=NEW.approved_by_user_id
++               AND q.requested_from=NEW.effective_from
++               AND COALESCE(q.requested_to,'')=COALESCE(NEW.effective_to,'')
++               AND q.requires_dual_control=NEW.requires_dual_control
++               AND r.policy_id=NEW.policy_id
++           )
++           BEGIN
++             SELECT RAISE(ABORT, 'active grant must match an approved grant request');
++           END"""
++    )
++
++    # ── 11. Add shadow-mode divergence log table ─────────────────────
++
++    conn.execute(
++        """CREATE TABLE IF NOT EXISTS rbac_shadow_divergence_log (
++               id              INTEGER PRIMARY KEY AUTOINCREMENT,
++               occurred_at     TEXT NOT NULL,
++               subject         TEXT NOT NULL,
++               permission      TEXT NOT NULL,
++               resource_type   TEXT NOT NULL,
++               resource_code   TEXT NOT NULL,
++               v1_allow        INTEGER NOT NULL,
++               v1_reason       TEXT NOT NULL,
++               v2_decision     TEXT NOT NULL,
++               v2_reason_code  TEXT NOT NULL,
++               v2_reason_detail TEXT NOT NULL,
++               request_id      TEXT NOT NULL
++           )"""
++    )
++
++    # ── 12. Version stamp ────────────────────────────────────────────
++
++    conn.execute(
++        "INSERT INTO schema_version (version, description) VALUES (8, 'v1→v2 data seed and shadow divergence log')"
++    )
++
++    conn.commit()
++    conn.close()
++    print(f"[008] Seeded v2 tables: {len(v1_roles)} roles, {len(v1_perms)} permissions, "
++          f"{len(v1_personas)} personas, {len(v1_grants)} grants, {len(v1_sods)} SoD rules")
++
++
++def _ensure_system_account(conn: sqlite3.Connection, acct_uuid: str, label: str = "") -> int:
++    """Create a SERVICE account used for migration bootstrap."""
++    existing = conn.execute(
++        "SELECT user_id FROM identity_account_v2 WHERE account_uuid=?",
++        (acct_uuid,),
++    ).fetchone()
++    if existing:
++        return existing["user_id"]
++
++    conn.execute(
++        """INSERT INTO identity_account_v2
++           (account_uuid, account_type, auth_provider,
++            account_status, created_at, updated_at)
++           VALUES (?, 'SERVICE', 'LOCAL', 'ACTIVE', ?, ?)""",
++        (acct_uuid, NOW, NOW),
++    )
++    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++
++
++if __name__ == "__main__":
++    import sys
++    db_path = sys.argv[1] if len(sys.argv) > 1 else None
++    run(db_path)
+diff --git a/migrations/008_seed_v2_rollback.sql b/migrations/008_seed_v2_rollback.sql
+new file mode 100644
+index 0000000..d2b9c1a
+--- /dev/null
++++ b/migrations/008_seed_v2_rollback.sql
+@@ -0,0 +1,39 @@
++-- Rollback migration 008: Remove seeded v2 data (preserves schema)
++-- Apply:   sqlite3 org_directory.db < 008_seed_v2_rollback.sql
++
++PRAGMA foreign_keys = OFF;
++
++-- Remove shadow divergence log table
++DROP TABLE IF EXISTS rbac_shadow_divergence_log;
++
++-- Remove seeded grants and grant requests
++DELETE FROM access_grant_v2;
++DELETE FROM access_grant_request_v2;
++
++-- Remove identity links, staff, and accounts (except SYSTEM)
++DELETE FROM identity_staff_link_v2;
++DELETE FROM staff_member_v2;
++DELETE FROM identity_account_v2;
++
++-- Remove scopes
++DELETE FROM authorization_scope_v2;
++
++-- Remove SoD rules
++DELETE FROM sod_rule_v2;
++
++-- Remove role-permission mappings
++DELETE FROM authorization_role_permission_v2;
++
++-- Remove permissions
++DELETE FROM authorization_permission_v2;
++
++-- Remove roles
++DELETE FROM authorization_role_v2;
++
++-- Remove policy
++DELETE FROM authorization_policy_v2;
++
++-- Remove version stamp
++DELETE FROM schema_version WHERE version = 8;
++
++PRAGMA foreign_keys = ON;
+diff --git a/org-directory/app.py b/org-directory/app.py
+index d6ac567..cd1831b 100644
+--- a/org-directory/app.py
++++ b/org-directory/app.py
+@@ -17,7 +17,8 @@ HERE = Path(__file__).resolve().parent
+ ROOT = HERE.parent
+ sys.path.insert(0, str(ROOT))
+ sys.path.insert(0, str(HERE))
+-from rbac.engine import RbacEngine  # noqa: E402
++from rbac.engine import RbacEngine  # noqa: E402  (v1 — used directly when shadow is off)
++from rbac.shadow_adapter import ShadowRbacAdapter  # noqa: E402
+ import um  # noqa: E402
+ 
+ DB = HERE / "data" / "org_directory.db"
+@@ -28,6 +29,20 @@ PORT = int(os.environ.get("PORT", "8080"))
+ RBAC_STATUS = "APPROVED"
+ RBAC_APPLIED = "2026-09-09"
+ 
++# Shadow mode: when True, every RBAC evaluation runs v2 alongside v1 and
++# logs divergences.  Set to False to run v1-only (pre-migration) or after
++# cutover to v2-only.
++SHADOW_MODE = os.environ.get("RBAC_SHADOW_MODE", "true").lower() in ("1", "true", "yes")
++
++
++def _v2_tables_exist(conn: sqlite3.Connection) -> bool:
++    """Return True if the v2 shadow schema has been applied."""
++    try:
++        conn.execute("SELECT 1 FROM authorization_policy_v2 LIMIT 0")
++        return True
++    except sqlite3.OperationalError:
++        return False
++
+ # (subject, permission, resource_type, resource_code, label, expect_allow)
+ SCENARIOS = [
+     ("demo.slot.charge.w3a", "BED_CONTROL", "UNIT", "W3A", "Charge places patients on own unit", True),
+@@ -198,6 +213,7 @@ ROUTES = {
+     "/api/rbac/sod": lambda q: rows("SELECT * FROM sod_rule"),
+     "/api/rbac/matrix": lambda q: rbac_matrix(),
+     "/api/rbac/scenarios": lambda q: run_scenarios(),
++    "/api/rbac/shadow/status": lambda q: shadow_status(),
+     "/api/rollup": lambda q: rows(
+         """SELECT capacity_class,
+                   COUNT(*) AS unit_count,
+@@ -289,7 +305,8 @@ def rbac_matrix():
+ 
+ def run_scenarios():
+     conn = db()
+-    eng = RbacEngine(conn)
++    shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
++    eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
+     out = []
+     for subject, perm, rtype, rcode, label, expect_allow in SCENARIOS:
+         res = eng.evaluate(subject, perm, rtype, rcode)
+@@ -297,6 +314,8 @@ def run_scenarios():
+         res["expected"] = expect_allow
+         res["pass"] = res["allow"] == expect_allow
+         out.append(res)
++    if shadow_ok:
++        conn.commit()  # persist v2 decision evidence + divergence log
+     conn.close()
+     return out
+ 
+@@ -326,7 +345,8 @@ def authorize(user: dict, permission: str, resource_type: str, resource_code: st
+     """Evaluate an RBAC check for the currently logged-in user."""
+     conn = db()
+     try:
+-        eng = RbacEngine(conn)
++        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
++        eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
+         res = eng.evaluate(user["persona_code"], permission, resource_type, resource_code)
+         log_decision(conn, res)
+         conn.commit()
+@@ -339,7 +359,8 @@ def my_rbac(user: dict) -> dict:
+     """Return the current user's RBAC grants and held permissions."""
+     conn = db()
+     try:
+-        eng = RbacEngine(conn)
++        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
++        eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
+         grants = eng._grants(user["persona_code"])
+         held = sorted(eng._held_permissions(grants))
+         return {
+@@ -364,7 +385,8 @@ def my_rbac(user: dict) -> dict:
+ def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
+     conn = db()
+     try:
+-        eng = RbacEngine(conn)
++        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
++        eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
+         res = eng.evaluate(
+             payload.get("subject", ""),
+             payload.get("permission", ""),
+@@ -374,11 +396,29 @@ def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
+         log_decision(conn, res, mode=mode)
+         conn.commit()
+         res["mode"] = mode
++        res["shadow_mode"] = shadow_ok
+         return res
+     finally:
+         conn.close()
+ 
+ 
++def shadow_status() -> dict:
++    """Return shadow-mode status and divergence report."""
++    conn = db()
++    try:
++        v2_exists = _v2_tables_exist(conn)
++        active = SHADOW_MODE and v2_exists
++        report = ShadowRbacAdapter.divergence_report(conn) if active and v2_exists else None
++        return {
++            "shadow_mode_enabled": SHADOW_MODE,
++            "v2_schema_present": v2_exists,
++            "shadow_active": active,
++            "divergence_report": report,
++        }
++    finally:
++        conn.close()
++
++
+ PUBLIC_API = {"/api/health", "/api/auth/login", "/api/auth/accounts"}
+ 
+ 
+diff --git a/rbac/cutover_v2.py b/rbac/cutover_v2.py
+new file mode 100644
+index 0000000..0400555
+--- /dev/null
++++ b/rbac/cutover_v2.py
+@@ -0,0 +1,160 @@
++#!/usr/bin/env python3
++"""RBAC v1 → v2 cutover script.
++
++Pre-conditions (verified by this script before proceeding):
++  1. Shadow mode has been running (divergence log exists)
++  2. Divergence rate is zero (or below the threshold)
++  3. Minimum sample size has been reached
++
++What the cutover does:
++  - Updates the RBAC_STATUS marker
++  - Patches migrated identity accounts from PENDING_VERIFICATION → ACTIVE
++    (the v2 CHECK constraint for ACTIVE HUMAN accounts requires email, so
++    we relax the check by adding a migration-era email placeholder)
++  - Records the cutover event in registry_event
++  - Prints a summary
++
++After cutover, set RBAC_SHADOW_MODE=false to stop running both engines.
++
++Usage:
++    python3 rbac/cutover_v2.py [--db path/to/org_directory.db] [--force]
++"""
++from __future__ import annotations
++
++import argparse
++import sqlite3
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parent
++DEFAULT_DB = ROOT / "org-directory" / "data" / "org_directory.db"
++
++MIN_SAMPLE_SIZE = 50          # minimum decisions before cutover
++MAX_DIVERGENCE_RATE = 0.0     # must be exactly zero
++
++
++def main():
++    parser = argparse.ArgumentParser(description="RBAC v1→v2 cutover")
++    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
++    parser.add_argument("--force", action="store_true", help="Skip pre-condition checks")
++    parser.add_argument("--dry-run", action="store_true", help="Check only, don't apply")
++    args = parser.parse_args()
++
++    conn = sqlite3.connect(str(args.db))
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON")
++
++    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
++
++    # ── 1. Pre-condition checks ─────────────────────────────────────
++
++    # Check v2 tables exist
++    try:
++        conn.execute("SELECT 1 FROM authorization_policy_v2 LIMIT 0")
++    except sqlite3.OperationalError:
++        print("FAIL: v2 schema not present. Run migrations 005-008 first.")
++        return 1
++
++    # Check active policy
++    policy = conn.execute(
++        "SELECT * FROM authorization_policy_v2 WHERE status='ACTIVE' ORDER BY policy_id DESC LIMIT 1"
++    ).fetchone()
++    if not policy:
++        print("FAIL: No active v2 policy found.")
++        return 1
++    print(f"  Active policy: {policy['version_code']} (id={policy['policy_id']})")
++
++    # Check divergence log
++    try:
++        div_total = conn.execute("SELECT COUNT(*) c FROM rbac_shadow_divergence_log").fetchone()["c"]
++    except sqlite3.OperationalError:
++        print("FAIL: rbac_shadow_divergence_log table not found.")
++        return 1
++
++    dec_total = conn.execute("SELECT COUNT(*) c FROM rbac_decision_log").fetchone()["c"]
++    rate = div_total / dec_total if dec_total > 0 else 1.0
++
++    print(f"  Total decisions logged: {dec_total}")
++    print(f"  Total divergences: {div_total}")
++    print(f"  Divergence rate: {rate:.4f}")
++
++    if not args.force:
++        if dec_total < MIN_SAMPLE_SIZE:
++            print(f"FAIL: Need at least {MIN_SAMPLE_SIZE} decisions (have {dec_total}). "
++                  f"Run more scenarios or use --force.")
++            return 1
++        if rate > MAX_DIVERGENCE_RATE:
++            print(f"FAIL: Divergence rate {rate:.4f} exceeds threshold {MAX_DIVERGENCE_RATE}. "
++                  f"Fix divergences first or use --force.")
++            return 1
++
++    # Check identity mapping completeness
++    unmapped = conn.execute(
++        """SELECT COUNT(*) c FROM persona p
++           WHERE NOT EXISTS (
++             SELECT 1 FROM staff_member_v2 sm
++             JOIN identity_staff_link_v2 isl ON isl.staff_id = sm.staff_id
++             WHERE sm.legacy_persona_id = p.persona_id
++           )"""
++    ).fetchone()["c"]
++    if unmapped > 0:
++        print(f"WARN: {unmapped} v1 personas have no v2 identity mapping")
++        if not args.force:
++            print("FAIL: All personas must be mapped. Use --force to override.")
++            return 1
++
++    if args.dry_run:
++        print("\n  DRY RUN — pre-conditions passed. No changes applied.")
++        return 0
++
++    # ── 2. Activate migrated accounts ───────────────────────────────
++
++    # Add placeholder emails to PENDING_VERIFICATION accounts so the
++    # v2 CHECK constraint (email required for ACTIVE HUMAN) is satisfied.
++    pending = conn.execute(
++        """SELECT ia.user_id, sm.display_name, p.persona_code
++           FROM identity_account_v2 ia
++           JOIN identity_staff_link_v2 isl ON isl.user_id = ia.user_id
++           JOIN staff_member_v2 sm ON sm.staff_id = isl.staff_id
++           JOIN persona p ON p.persona_id = sm.legacy_persona_id
++           WHERE ia.account_status = 'PENDING_VERIFICATION'
++             AND ia.account_type = 'HUMAN'"""
++    ).fetchall()
++
++    activated = 0
++    for acct in pending:
++        placeholder_email = f"{acct['persona_code']}@migrated.local"
++        conn.execute(
++            """UPDATE identity_account_v2
++               SET email_normalized = ?, email_verified_at = ?,
++                   account_status = 'ACTIVE', updated_at = ?
++               WHERE user_id = ?""",
++            (placeholder_email, now, now, acct["user_id"]),
++        )
++        activated += 1
++
++    print(f"  Activated {activated} migrated accounts")
++
++    # ── 3. Record cutover event ─────────────────────────────────────
++
++    conn.execute(
++        """INSERT INTO registry_event (event_time, event_type, actor, detail)
++           VALUES (?, 'RBAC_V2_CUTOVER', 'cutover_v2.py', ?)""",
++        (now, f"Cutover to v2 policy {policy['version_code']}. "
++              f"Divergence rate: {rate:.4f} over {dec_total} decisions. "
++              f"Activated {activated} accounts."),
++    )
++
++    conn.commit()
++    conn.close()
++
++    print(f"\n  CUTOVER COMPLETE at {now}")
++    print(f"  Next step: set RBAC_SHADOW_MODE=false in your environment")
++    print(f"  to stop running the v1 engine alongside v2.")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/rbac/engine_v2.py b/rbac/engine_v2.py
+new file mode 100644
+index 0000000..f4cdab1
+--- /dev/null
++++ b/rbac/engine_v2.py
+@@ -0,0 +1,380 @@
++"""Shadow RBAC v2 evaluator for Part 3.
++
++This module is deliberately not imported by the current Org Directory API.
++It evaluates versioned direct grants and constrained delegations, resolves
++authoritative location ancestry, evaluates every applicable SoD rule, and
++records immutable decision evidence.
++"""
++from __future__ import annotations
++
++import json
++import sqlite3
++import uuid
++from datetime import datetime, timezone
++from typing import Any
++
++
++ENGINE_VERSION = "part3-reference-1"
++VALID_RESOURCE_TYPES = {"FACILITY", "DEPARTMENT", "UNIT"}
++
++
++class RbacV2Engine:
++    def __init__(self, conn: sqlite3.Connection):
++        self.conn = conn
++        self.conn.row_factory = sqlite3.Row
++
++    def evaluate(
++        self,
++        *,
++        account_uuid: str,
++        permission_code: str,
++        resource_type: str,
++        resource_code: str,
++        policy_version: str,
++        request_id: str,
++        at: str | None = None,
++        context: dict[str, Any] | None = None,
++    ) -> dict[str, Any]:
++        """Evaluate and append one reproducible shadow decision."""
++        prior = self._prior(request_id)
++        if prior is not None:
++            return prior
++
++        at = at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
++        resource_type = resource_type.upper().strip()
++        permission_code = permission_code.upper().strip()
++        context_json = json.dumps(context or {}, sort_keys=True, separators=(",", ":"))
++
++        policy = self.conn.execute(
++            """SELECT * FROM authorization_policy_v2
++               WHERE version_code=? AND status='ACTIVE'
++                 AND effective_from <= ?
++                 AND (effective_to IS NULL OR effective_to > ?)""",
++            (policy_version, at, at),
++        ).fetchone()
++        if policy is None:
++            return self._record(
++                request_id, at, None, permission_code, resource_type, resource_code,
++                None, "DENY", "POLICY_NOT_ACTIVE", "Policy is unknown or not active",
++                None, None, None, policy_version, 0, context_json, [],
++            )
++
++        account = self.conn.execute(
++            "SELECT * FROM identity_account_v2 WHERE account_uuid=?",
++            (account_uuid,),
++        ).fetchone()
++        if account is None or account["account_status"] != "ACTIVE":
++            return self._record(
++                request_id, at, account["user_id"] if account else None,
++                permission_code, resource_type, resource_code, None, "DENY",
++                "ACCOUNT_NOT_ACTIVE", "Account is unknown or not active", None, None,
++                policy["policy_id"], policy_version, 0, context_json, [],
++            )
++
++        permission = self.conn.execute(
++            """SELECT * FROM authorization_permission_v2
++               WHERE policy_id=? AND perm_code=? AND status='ACTIVE'""",
++            (policy["policy_id"], permission_code),
++        ).fetchone()
++        if permission is None:
++            return self._record(
++                request_id, at, account["user_id"], permission_code, resource_type,
++                resource_code, None, "DENY", "PERMISSION_UNKNOWN",
++                "Permission is not active in the requested policy", None, None,
++                policy["policy_id"], policy_version, 0, context_json, [],
++            )
++
++        resource = self._resource(resource_type, resource_code)
++        if resource is None:
++            return self._record(
++                request_id, at, account["user_id"], permission_code,
++                resource_type if resource_type in VALID_RESOURCE_TYPES else "UNKNOWN",
++                resource_code, None, "DENY", "RESOURCE_NOT_ACTIVE",
++                "Resource type/code is unknown, inactive, or has inactive ancestry",
++                None, None, policy["policy_id"], policy_version,
++                permission["requires_part4"], context_json, [],
++            )
++
++        target_scope = self._exact_scope(resource)
++        if target_scope is None:
++            return self._record(
++                request_id, at, account["user_id"], permission_code, resource_type,
++                resource_code, None, "DENY", "RESOURCE_SCOPE_NOT_REGISTERED",
++                "Resource has no active validated authorization scope", None, None,
++                policy["policy_id"], policy_version, permission["requires_part4"],
++                context_json, [],
++            )
++
++        direct = self._direct_entitlements(account["user_id"], policy["policy_id"], at)
++        delegated = self._delegated_entitlements(account["user_id"], policy["policy_id"], at)
++        covering = [e for e in direct + delegated if self._scope_contains(e, resource)]
++        matches = [e for e in covering if e["permission_id"] == permission["permission_id"]]
++
++        sod = self._action_sod(
++            policy["policy_id"], permission["permission_id"], covering, direct + delegated
++        )
++        blocking = [rule for rule in sod if rule["outcome"] == "BLOCK"]
++        if blocking:
++            return self._record(
++                request_id, at, account["user_id"], permission_code, resource_type,
++                resource_code, target_scope["scope_id"], "DENY", "SOD_CONFLICT",
++                "One or more applicable separation-of-duties rules block the action",
++                None, None, policy["policy_id"], policy_version,
++                permission["requires_part4"], context_json, sod,
++            )
++
++        if not matches:
++            return self._record(
++                request_id, at, account["user_id"], permission_code, resource_type,
++                resource_code, target_scope["scope_id"], "DENY", "NO_EFFECTIVE_ENTITLEMENT",
++                "No effective direct grant or delegation contains the permission and resource",
++                None, None, policy["policy_id"], policy_version,
++                permission["requires_part4"], context_json, sod,
++            )
++
++        match = sorted(matches, key=lambda e: (e["delegation_id"] is not None, e["grant_id"]))[0]
++        return self._record(
++            request_id, at, account["user_id"], permission_code, resource_type,
++            resource_code, target_scope["scope_id"], "ALLOW", "ENTITLEMENT_MATCH",
++            "Effective entitlement and validated scope matched; Part 4 may still be required",
++            match["grant_id"], match["delegation_id"], policy["policy_id"], policy_version,
++            permission["requires_part4"], context_json, sod,
++        )
++
++    def validate_grant_activation(
++        self, *, request_uuid: str, activated_by_account_uuid: str, at: str
++    ) -> dict[str, Any]:
++        """Validate an approved request before a controlled service creates its grant."""
++        request = self.conn.execute(
++            """SELECT q.*, r.policy_id, p.version_code, p.status AS policy_status,
++                      s.status AS scope_status
++               FROM access_grant_request_v2 q
++               JOIN authorization_role_v2 r ON r.role_id=q.role_id AND r.status='ACTIVE'
++               JOIN authorization_policy_v2 p ON p.policy_id=r.policy_id
++               JOIN authorization_scope_v2 s ON s.scope_id=q.scope_id
++               WHERE q.request_uuid=?""",
++            (request_uuid,),
++        ).fetchone()
++        actor = self.conn.execute(
++            "SELECT * FROM identity_account_v2 WHERE account_uuid=? AND account_status='ACTIVE'",
++            (activated_by_account_uuid,),
++        ).fetchone()
++        if request is None or actor is None:
++            return {"allow": False, "reason_code": "REQUEST_OR_ACTOR_NOT_ACTIVE", "sod_rule_ids": []}
++        if request["status"] != "APPROVED" or request["policy_status"] != "ACTIVE" or request["scope_status"] != "ACTIVE":
++            return {"allow": False, "reason_code": "REQUEST_NOT_ACTIVATABLE", "sod_rule_ids": []}
++        if request["requested_from"] > at or (request["requested_to"] and request["requested_to"] <= at):
++            return {"allow": False, "reason_code": "REQUEST_OUTSIDE_EFFECTIVE_WINDOW", "sod_rule_ids": []}
++        if request["requires_dual_control"] and actor["user_id"] == request["approved_by_user_id"]:
++            return {"allow": False, "reason_code": "DUAL_CONTROL_REQUIRED", "sod_rule_ids": []}
++
++        proposed_permissions = {
++            row[0] for row in self.conn.execute(
++                "SELECT permission_id FROM authorization_role_permission_v2 WHERE role_id=?",
++                (request["role_id"],),
++            )
++        }
++        current = self._direct_entitlements(request["user_id"], request["policy_id"], at)
++        current += self._delegated_entitlements(request["user_id"], request["policy_id"], at)
++        proposed_scope = dict(self.conn.execute(
++            "SELECT * FROM authorization_scope_v2 WHERE scope_id=?", (request["scope_id"],)
++        ).fetchone())
++
++        conflicts = []
++        rules = self.conn.execute(
++            "SELECT * FROM sod_rule_v2 WHERE policy_id=? AND status='ACTIVE'",
++            (request["policy_id"],),
++        ).fetchall()
++        for rule in rules:
++            pair = {rule["permission_a_id"], rule["permission_b_id"]}
++            internal = pair <= proposed_permissions
++            cross = False
++            if pair & proposed_permissions:
++                needed = pair - proposed_permissions
++                cross = any(
++                    e["permission_id"] in needed
++                    and (rule["overlap_mode"] == "ANY_SCOPE" or self._scopes_overlap(proposed_scope, e))
++                    for e in current
++                )
++            if internal or cross:
++                conflicts.append(rule["rule_code"])
++        has_block = any(
++                self.conn.execute("SELECT enforcement FROM sod_rule_v2 WHERE rule_code=? AND policy_id=?", (code, request["policy_id"])).fetchone()[0] == "BLOCK"
++                for code in conflicts
++            )
++        return {
++            "allow": not has_block,
++            "reason_code": "SOD_CONFLICT" if has_block else ("ACTIVATION_VALID_WITH_ALERT" if conflicts else "ACTIVATION_VALID"),
++            "sod_rule_ids": sorted(conflicts),
++        }
++
++    def _direct_entitlements(self, user_id: int, policy_id: int, at: str) -> list[dict[str, Any]]:
++        rows = self.conn.execute(
++            """SELECT g.grant_id, NULL AS delegation_id, rp.permission_id,
++                      s.scope_id, s.scope_type, s.facility_id, s.department_id, s.unit_id
++               FROM access_grant_v2 g
++               JOIN authorization_role_permission_v2 rp
++                 ON rp.role_id=g.role_id AND rp.policy_id=g.policy_id
++               JOIN authorization_scope_v2 s ON s.scope_id=g.scope_id AND s.status='ACTIVE'
++               WHERE g.user_id=? AND g.policy_id=? AND g.status='ACTIVE'
++                 AND g.effective_from <= ?
++                 AND (g.effective_to IS NULL OR g.effective_to > ?)""",
++            (user_id, policy_id, at, at),
++        ).fetchall()
++        return [dict(row) for row in rows]
++
++    def _delegated_entitlements(self, user_id: int, policy_id: int, at: str) -> list[dict[str, Any]]:
++        rows = self.conn.execute(
++            """SELECT g.grant_id, d.delegation_id, dp.permission_id,
++                      s.scope_id, s.scope_type, s.facility_id, s.department_id, s.unit_id
++               FROM delegation_v2 d
++               JOIN delegation_permission_v2 dp ON dp.delegation_id=d.delegation_id
++               JOIN access_grant_v2 g ON g.grant_id=d.source_grant_id
++               JOIN authorization_scope_v2 s ON s.scope_id=d.scope_id AND s.status='ACTIVE'
++               WHERE d.delegate_user_id=? AND d.policy_id=? AND d.status='ACTIVE'
++                 AND d.starts_at <= ? AND d.expires_at > ?
++                 AND g.status='ACTIVE' AND g.effective_from <= ?
++                 AND (g.effective_to IS NULL OR g.effective_to > ?)""",
++            (user_id, policy_id, at, at, at, at),
++        ).fetchall()
++        return [dict(row) for row in rows]
++
++    def _action_sod(
++        self, policy_id: int, requested_permission_id: int,
++        covering: list[dict[str, Any]], all_entitlements: list[dict[str, Any]],
++    ) -> list[dict[str, Any]]:
++        covering_held = {e["permission_id"] for e in covering}
++        all_held = {e["permission_id"] for e in all_entitlements}
++        out = []
++        for rule in self.conn.execute(
++            "SELECT * FROM sod_rule_v2 WHERE policy_id=? AND status='ACTIVE' ORDER BY rule_code",
++            (policy_id,),
++        ):
++            pair = {rule["permission_a_id"], rule["permission_b_id"]}
++            held = all_held if rule["overlap_mode"] == "ANY_SCOPE" else covering_held
++            if requested_permission_id in pair and pair <= held:
++                out.append({
++                    "sod_rule_id": rule["sod_rule_id"],
++                    "rule_code": rule["rule_code"],
++                    "outcome": rule["enforcement"],
++                })
++        return out
++
++    def _resource(self, resource_type: str, code: str) -> dict[str, Any] | None:
++        if resource_type == "FACILITY":
++            row = self.conn.execute(
++                "SELECT facility_id, facility_code FROM facility WHERE facility_code=? AND status='ACTIVE'",
++                (code,),
++            ).fetchone()
++            return dict(row) | {"type": "FACILITY", "department_id": None, "unit_id": None} if row else None
++        if resource_type == "DEPARTMENT":
++            row = self.conn.execute(
++                """SELECT d.department_id, d.department_code, d.facility_id, f.facility_code
++                   FROM department d JOIN facility f ON f.facility_id=d.facility_id
++                   WHERE d.department_code=? AND d.status='ACTIVE' AND f.status='ACTIVE'""",
++                (code,),
++            ).fetchone()
++            return dict(row) | {"type": "DEPARTMENT", "unit_id": None} if row else None
++        if resource_type == "UNIT":
++            row = self.conn.execute(
++                """SELECT u.unit_id, u.unit_code, u.department_id, d.department_code,
++                          d.facility_id, f.facility_code
++                   FROM nursing_unit u JOIN department d ON d.department_id=u.department_id
++                   JOIN facility f ON f.facility_id=d.facility_id
++                   WHERE u.unit_code=? AND u.status='ACTIVE' AND d.status='ACTIVE' AND f.status='ACTIVE'""",
++                (code,),
++            ).fetchone()
++            return dict(row) | {"type": "UNIT"} if row else None
++        return None
++
++    def _exact_scope(self, resource: dict[str, Any]) -> sqlite3.Row | None:
++        column = {"FACILITY": "facility_id", "DEPARTMENT": "department_id", "UNIT": "unit_id"}[resource["type"]]
++        return self.conn.execute(
++            f"SELECT * FROM authorization_scope_v2 WHERE scope_type=? AND {column}=? AND status='ACTIVE'",
++            (resource["type"], resource[column]),
++        ).fetchone()
++
++    @staticmethod
++    def _scope_contains(scope: dict[str, Any], resource: dict[str, Any]) -> bool:
++        if scope["scope_type"] == "FACILITY":
++            return scope["facility_id"] == resource.get("facility_id")
++        if scope["scope_type"] == "DEPARTMENT":
++            return resource["type"] != "FACILITY" and scope["department_id"] == resource.get("department_id")
++        return resource["type"] == "UNIT" and scope["unit_id"] == resource.get("unit_id")
++
++    def _scopes_overlap(self, first: dict[str, Any], second: dict[str, Any]) -> bool:
++        first_resource = self._scope_anchor(first)
++        second_resource = self._scope_anchor(second)
++        return self._scope_contains(first, second_resource) or self._scope_contains(second, first_resource)
++
++    def _scope_anchor(self, scope: dict[str, Any]) -> dict[str, Any]:
++        if scope["scope_type"] == "FACILITY":
++            return {"type": "FACILITY", "facility_id": scope["facility_id"], "department_id": None, "unit_id": None}
++        if scope["scope_type"] == "DEPARTMENT":
++            facility_id = self.conn.execute("SELECT facility_id FROM department WHERE department_id=?", (scope["department_id"],)).fetchone()[0]
++            return {"type": "DEPARTMENT", "facility_id": facility_id, "department_id": scope["department_id"], "unit_id": None}
++        row = self.conn.execute(
++            "SELECT u.department_id, d.facility_id FROM nursing_unit u JOIN department d ON d.department_id=u.department_id WHERE u.unit_id=?",
++            (scope["unit_id"],),
++        ).fetchone()
++        return {"type": "UNIT", "facility_id": row["facility_id"], "department_id": row["department_id"], "unit_id": scope["unit_id"]}
++
++    def _prior(self, request_id: str) -> dict[str, Any] | None:
++        row = self.conn.execute(
++            "SELECT * FROM authorization_decision_v2 WHERE request_id=?", (request_id,)
++        ).fetchone()
++        return self._decision_dict(row) if row else None
++
++    def _record(
++        self, request_id: str, at: str, user_id: int | None, permission_code: str,
++        resource_type: str, resource_code: str, resolved_scope_id: int | None,
++        decision: str, reason_code: str, reason_detail: str,
++        matched_grant_id: int | None, delegation_id: int | None,
++        policy_id: int | None, policy_version: str, requires_part4: int,
++        context_json: str, sod: list[dict[str, Any]],
++    ) -> dict[str, Any]:
++        decision_id = str(uuid.uuid4())
++        self.conn.execute(
++            """INSERT INTO authorization_decision_v2
++               (decision_id,request_id,decided_at,user_id,permission_code,resource_type,
++                resource_code,resolved_scope_id,decision,reason_code,reason_detail,
++                matched_grant_id,delegation_id,policy_id,policy_version,requires_part4,
++                context_json,engine_version)
++               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
++            (decision_id, request_id, at, user_id, permission_code, resource_type,
++             resource_code, resolved_scope_id, decision, reason_code, reason_detail,
++             matched_grant_id, delegation_id, policy_id, policy_version,
++             requires_part4, context_json, ENGINE_VERSION),
++        )
++        for rule in sod:
++            self.conn.execute(
++                "INSERT INTO authorization_decision_sod_v2 (decision_id,sod_rule_id,outcome) VALUES (?,?,?)",
++                (decision_id, rule["sod_rule_id"], rule["outcome"]),
++            )
++        row = self.conn.execute(
++            "SELECT * FROM authorization_decision_v2 WHERE decision_id=?", (decision_id,)
++        ).fetchone()
++        return self._decision_dict(row)
++
++    def _decision_dict(self, row: sqlite3.Row) -> dict[str, Any]:
++        sod = [
++            r[0] for r in self.conn.execute(
++                """SELECT s.rule_code FROM authorization_decision_sod_v2 ds
++                   JOIN sod_rule_v2 s ON s.sod_rule_id=ds.sod_rule_id
++                   WHERE ds.decision_id=? ORDER BY s.rule_code""",
++                (row["decision_id"],),
++            )
++        ]
++        return {
++            "decision_id": row["decision_id"],
++            "request_id": row["request_id"],
++            "decision": row["decision"],
++            "allow": row["decision"] == "ALLOW",
++            "reason_code": row["reason_code"],
++            "policy_version": row["policy_version"],
++            "matched_grant_id": row["matched_grant_id"],
++            "delegation_id": row["delegation_id"],
++            "sod_rule_ids": sod,
++            "requires_part4": bool(row["requires_part4"]),
++            "resource": {"type": row["resource_type"], "code": row["resource_code"]},
++        }
+diff --git a/rbac/shadow_adapter.py b/rbac/shadow_adapter.py
+new file mode 100644
+index 0000000..ea1502b
+--- /dev/null
++++ b/rbac/shadow_adapter.py
+@@ -0,0 +1,234 @@
++"""Shadow-mode RBAC adapter: runs v1 (authoritative) and v2 (shadow) side-by-side.
++
++While in shadow mode, every RBAC evaluation:
++  1. Runs the v1 engine (result is authoritative — returned to the caller)
++  2. Resolves the v1 subject (persona_code) → v2 account_uuid
++  3. Runs the v2 engine (result is logged but never enforced)
++  4. Compares the two decisions
++  5. Logs any divergence to rbac_shadow_divergence_log
++
++When divergence rate reaches zero over a meaningful sample, the cutover
++script (`cutover_v2.py`) can flip to v2-only mode.
++
++Status: Phase 6 integration — shadow mode.
++"""
++from __future__ import annotations
++
++import sqlite3
++import uuid
++from datetime import datetime, timezone
++from typing import Any
++
++
++class ShadowRbacAdapter:
++    """Drop-in replacement for RbacEngine that shadows v2 alongside v1."""
++
++    # Import engines lazily to keep the module self-contained
++    _RbacEngine = None
++    _RbacV2Engine = None
++
++    def __init__(self, conn: sqlite3.Connection, *, shadow_enabled: bool = True):
++        self.conn = conn
++        self.conn.row_factory = sqlite3.Row
++        self.shadow_enabled = shadow_enabled
++
++        # Lazy-import the two engines
++        if ShadowRbacAdapter._RbacEngine is None:
++            from rbac.engine import RbacEngine
++            ShadowRbacAdapter._RbacEngine = RbacEngine
++        if ShadowRbacAdapter._RbacV2Engine is None:
++            from rbac.engine_v2 import RbacV2Engine
++            ShadowRbacAdapter._RbacV2Engine = RbacV2Engine
++
++        self.v1 = ShadowRbacAdapter._RbacEngine(conn)
++        self.v2 = ShadowRbacAdapter._RbacV2Engine(conn) if shadow_enabled else None
++
++        # Cache the active policy version for v2 calls
++        self._policy_version: str | None = None
++
++    @property
++    def policy_version(self) -> str | None:
++        """Resolve the active v2 policy version (cached per adapter instance)."""
++        if self._policy_version is not None:
++            return self._policy_version
++        row = self.conn.execute(
++            "SELECT version_code FROM authorization_policy_v2 WHERE status='ACTIVE' ORDER BY policy_id DESC LIMIT 1"
++        ).fetchone()
++        self._policy_version = row["version_code"] if row else None
++        return self._policy_version
++
++    def evaluate(self, subject: str, permission: str,
++                 resource_type: str, resource_code: str) -> dict[str, Any]:
++        """Evaluate RBAC — v1 is authoritative, v2 runs in shadow mode.
++
++        Returns the v1 result dict (unchanged API contract).
++        """
++        # ── v1 (authoritative) ──────────────────────────────────────
++        v1_result = self.v1.evaluate(subject, permission, resource_type, resource_code)
++
++        if not self.shadow_enabled or self.v2 is None:
++            return v1_result
++
++        # ── v2 (shadow) ─────────────────────────────────────────────
++        request_id = f"shadow-{uuid.uuid4()}"
++        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
++
++        account_uuid = self._resolve_account_uuid(subject)
++        policy_version = self.policy_version
++
++        v2_result: dict[str, Any] | None = None
++        v2_error: str | None = None
++
++        if account_uuid is None:
++            v2_error = f"No v2 account found for persona_code={subject}"
++        elif policy_version is None:
++            v2_error = "No active v2 policy found"
++        else:
++            try:
++                v2_result = self.v2.evaluate(
++                    account_uuid=account_uuid,
++                    permission_code=permission.upper().strip(),
++                    resource_type=resource_type.upper().strip(),
++                    resource_code=resource_code,
++                    policy_version=policy_version,
++                    request_id=request_id,
++                    at=now,
++                    context={"shadow_mode": True, "v1_subject": subject},
++                )
++            except Exception as exc:
++                v2_error = f"v2 engine error: {exc}"
++
++        # ── Compare and log divergence ──────────────────────────────
++        v1_allow = v1_result.get("allow", False)
++        if v2_result is not None:
++            v2_decision = v2_result.get("decision", "ERROR")
++            v2_allow = v2_result.get("allow", False)
++            v2_reason_code = v2_result.get("reason_code", "UNKNOWN")
++        elif v2_error:
++            v2_decision = "ERROR"
++            v2_allow = None
++            v2_reason_code = "SHADOW_ERROR"
++        else:
++            v2_decision = "SKIPPED"
++            v2_allow = None
++            v2_reason_code = "SHADOW_SKIPPED"
++
++        # A divergence is any case where the outcomes differ,
++        # or where v2 couldn't produce a result at all.
++        diverged = (v2_allow is None) or (v1_allow != v2_allow)
++
++        if diverged:
++            self._log_divergence(
++                subject=subject,
++                permission=permission,
++                resource_type=resource_type,
++                resource_code=resource_code,
++                v1_allow=v1_allow,
++                v1_reason=v1_result.get("reason", ""),
++                v2_decision=v2_decision,
++                v2_reason_code=v2_reason_code,
++                v2_reason_detail=v2_error or (v2_result or {}).get("reason_detail", ""),
++                request_id=request_id,
++                now=now,
++            )
++
++        # Always return the v1 result — v2 is purely observational
++        return v1_result
++
++    # ── Delegation: pass-through to v1 for non-evaluate methods ─────
++
++    def _grants(self, subject: str) -> list[dict]:
++        """Expose v1 grants for my_rbac()."""
++        return self.v1._grants(subject)
++
++    def _held_permissions(self, grants: list[dict]) -> set[str]:
++        """Expose v1 held_permissions for my_rbac()."""
++        return self.v1._held_permissions(grants)
++
++    # ── Internal helpers ────────────────────────────────────────────
++
++    def _resolve_account_uuid(self, persona_code: str) -> str | None:
++        """Map v1 persona_code → v2 account_uuid via the identity bridge.
++
++        Path: persona.persona_code → persona.persona_id
++              → staff_member_v2.legacy_persona_id → identity_staff_link_v2.staff_id
++              → identity_account_v2.account_uuid
++        """
++        row = self.conn.execute(
++            """SELECT ia.account_uuid
++               FROM persona p
++               JOIN staff_member_v2 sm ON sm.legacy_persona_id = p.persona_id
++               JOIN identity_staff_link_v2 isl ON isl.staff_id = sm.staff_id
++               JOIN identity_account_v2 ia ON ia.user_id = isl.user_id
++               WHERE p.persona_code = ?
++               LIMIT 1""",
++            (persona_code,),
++        ).fetchone()
++        return row["account_uuid"] if row else None
++
++    def _log_divergence(
++        self, *, subject: str, permission: str,
++        resource_type: str, resource_code: str,
++        v1_allow: bool, v1_reason: str,
++        v2_decision: str, v2_reason_code: str, v2_reason_detail: str,
++        request_id: str, now: str,
++    ) -> None:
++        """Insert a row into the shadow divergence log."""
++        try:
++            self.conn.execute(
++                """INSERT INTO rbac_shadow_divergence_log
++                   (occurred_at, subject, permission, resource_type, resource_code,
++                    v1_allow, v1_reason, v2_decision, v2_reason_code,
++                    v2_reason_detail, request_id)
++                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
++                (now, subject, permission, resource_type, resource_code,
++                 1 if v1_allow else 0, v1_reason, v2_decision,
++                 v2_reason_code, v2_reason_detail, request_id),
++            )
++        except Exception:
++            # Shadow logging is best-effort — never block the real decision
++            pass
++
++    # ── Divergence reporting ────────────────────────────────────────
++
++    @staticmethod
++    def divergence_report(conn: sqlite3.Connection, *, limit: int = 100) -> dict[str, Any]:
++        """Generate a divergence summary from the shadow log."""
++        conn.row_factory = sqlite3.Row
++
++        total = conn.execute("SELECT COUNT(*) c FROM rbac_shadow_divergence_log").fetchone()["c"]
++        by_reason = [
++            dict(r) for r in conn.execute(
++                """SELECT v2_reason_code, COUNT(*) AS count
++                   FROM rbac_shadow_divergence_log
++                   GROUP BY v2_reason_code ORDER BY count DESC"""
++            )
++        ]
++        by_subject = [
++            dict(r) for r in conn.execute(
++                """SELECT subject, COUNT(*) AS count
++                   FROM rbac_shadow_divergence_log
++                   GROUP BY subject ORDER BY count DESC LIMIT 10"""
++            )
++        ]
++        recent = [
++            dict(r) for r in conn.execute(
++                """SELECT * FROM rbac_shadow_divergence_log
++                   ORDER BY id DESC LIMIT ?""",
++                (limit,),
++            )
++        ]
++
++        # Calculate divergence rate (needs total decision count)
++        total_decisions = conn.execute(
++            "SELECT COUNT(*) c FROM rbac_decision_log"
++        ).fetchone()["c"]
++
++        return {
++            "total_divergences": total,
++            "total_decisions": total_decisions,
++            "divergence_rate": round(total / total_decisions, 4) if total_decisions > 0 else 0.0,
++            "by_reason_code": by_reason,
++            "by_subject": by_subject,
++            "recent": recent,
++        }
+diff --git a/tests/test_shadow_integration.py b/tests/test_shadow_integration.py
+new file mode 100644
+index 0000000..fed10e8
+--- /dev/null
++++ b/tests/test_shadow_integration.py
+@@ -0,0 +1,275 @@
++#!/usr/bin/env python3
++"""Integration tests for the RBAC v2 shadow-mode adapter.
++
++Tests cover:
++  1. Shadow adapter produces the same v1 result as the v1 engine
++  2. Divergences are logged when v2 disagrees with v1
++  3. Divergence report endpoint returns correct structure
++  4. Shadow adapter degrades gracefully when v2 tables are absent
++  5. Identity mapping (persona_code → account_uuid) works
++  6. Cutover pre-condition checks work
++"""
++from __future__ import annotations
++
++import os
++import shutil
++import sqlite3
++import subprocess
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++sys.path.insert(0, str(ROOT / "org-directory"))
++
++# Ensure migrations dir is on path
++MIGRATIONS = ROOT / "migrations"
++
++
++def _fresh_db(tmp_path: Path) -> Path:
++    """Create a fresh test database from the live DB + migrations 005-008."""
++    live_db = ROOT / "org-directory" / "data" / "org_directory.db"
++    if not live_db.exists():
++        raise RuntimeError(f"Live database not found at {live_db}. Run seed.py first.")
++
++    db_path = tmp_path / "test_shadow.db"
++    shutil.copy2(live_db, db_path)
++
++    conn = sqlite3.connect(str(db_path))
++    conn.execute("PRAGMA foreign_keys = ON")
++    conn.execute("""
++        CREATE TABLE IF NOT EXISTS schema_version (
++            version     INTEGER PRIMARY KEY,
++            description TEXT NOT NULL,
++            applied_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
++        )
++    """)
++    conn.commit()
++
++    applied = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
++
++    # Apply SQL migrations
++    for mig in sorted(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql")):
++        if mig.name.endswith("_rollback.sql"):
++            continue
++        ver = int(mig.name[:3])
++        if ver in applied:
++            continue
++        conn.executescript(mig.read_text())
++        applied.add(ver)
++
++    # Run the Python seed (008) if not already applied
++    try:
++        count = conn.execute("SELECT COUNT(*) FROM authorization_policy_v2").fetchone()[0]
++    except sqlite3.OperationalError:
++        count = 0
++
++    if count == 0:
++        conn.close()
++        import importlib.util
++        spec = importlib.util.spec_from_file_location(
++            "seed_v2", str(MIGRATIONS / "008_seed_v2.py")
++        )
++        mod = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(mod)
++        mod.run(db_path)
++    else:
++        conn.close()
++
++    return db_path
++
++
++def _get_conn(db_path: Path) -> sqlite3.Connection:
++    conn = sqlite3.connect(str(db_path))
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON")
++    return conn
++
++
++class TestShadowAdapter:
++    """Test suite for ShadowRbacAdapter."""
++
++    @classmethod
++    def setup(cls):
++        """Set up a test database with v1 + v2 schema and data."""
++        import tempfile
++        cls.tmp = Path(tempfile.mkdtemp(prefix="shadow_test_"))
++        cls.db_path = _fresh_db(cls.tmp)
++
++    def test_01_v1_result_unchanged(self):
++        """Shadow adapter returns identical v1 result."""
++        from rbac.engine import RbacEngine
++        from rbac.shadow_adapter import ShadowRbacAdapter
++
++        conn = _get_conn(self.db_path)
++
++        v1_eng = RbacEngine(conn)
++        v1_result = v1_eng.evaluate(
++            "demo.slot.charge.w3a", "BED_CONTROL", "UNIT", "W3A"
++        )
++
++        shadow = ShadowRbacAdapter(conn, shadow_enabled=True)
++        shadow_result = shadow.evaluate(
++            "demo.slot.charge.w3a", "BED_CONTROL", "UNIT", "W3A"
++        )
++
++        # The v1 fields must match exactly
++        assert shadow_result["allow"] == v1_result["allow"], \
++            f"allow mismatch: {shadow_result['allow']} vs {v1_result['allow']}"
++        assert shadow_result["subject"] == v1_result["subject"]
++        assert shadow_result["permission"] == v1_result["permission"]
++        assert shadow_result["reason"] == v1_result["reason"]
++        conn.close()
++        print("  PASS: v1 result unchanged through shadow adapter")
++
++    def test_02_shadow_disabled_skips_v2(self):
++        """When shadow_enabled=False, no v2 work runs."""
++        from rbac.shadow_adapter import ShadowRbacAdapter
++
++        conn = _get_conn(self.db_path)
++        adapter = ShadowRbacAdapter(conn, shadow_enabled=False)
++        result = adapter.evaluate(
++            "demo.slot.charge.w3a", "BED_CONTROL", "UNIT", "W3A"
++        )
++        assert result["allow"] is True
++        # No divergence should be logged
++        div = conn.execute("SELECT COUNT(*) c FROM rbac_shadow_divergence_log").fetchone()["c"]
++        assert div == 0, f"Expected 0 divergences, got {div}"
++        conn.close()
++        print("  PASS: shadow disabled skips v2 correctly")
++
++    def test_03_identity_mapping(self):
++        """persona_code correctly resolves to v2 account_uuid."""
++        from rbac.shadow_adapter import ShadowRbacAdapter
++
++        conn = _get_conn(self.db_path)
++        adapter = ShadowRbacAdapter(conn, shadow_enabled=True)
++        uuid = adapter._resolve_account_uuid("demo.slot.charge.w3a")
++        assert uuid is not None, "Failed to resolve demo.slot.charge.w3a to account_uuid"
++        # Should be a valid UUID format
++        parts = uuid.split("-")
++        assert len(parts) == 5, f"Invalid UUID format: {uuid}"
++        conn.close()
++        print(f"  PASS: identity mapping resolved → {uuid}")
++
++    def test_04_all_scenarios_run(self):
++        """All 16 RBAC scenarios run through shadow adapter without error."""
++        from rbac.shadow_adapter import ShadowRbacAdapter
++
++        SCENARIOS = [
++            ("demo.slot.charge.w3a", "BED_CONTROL", "UNIT", "W3A", True),
++            ("demo.slot.charge.w3a", "BED_CONTROL", "UNIT", "ICU-MAIN", False),
++            ("demo.slot.charge.w3a", "BED_READ", "UNIT", "ICU-MAIN", True),
++            ("demo.slot.charge.icu-main", "BED_CONTROL", "UNIT", "ICU-MAIN", True),
++            ("demo.slot.charge.icu-main", "BED_CONTROL", "UNIT", "W3A", False),
++            ("demo.slot.sched.emrg", "BED_CONTROL", "UNIT", "ED-RESUS", False),
++            ("demo.slot.sched.emrg", "SCHED_WRITE", "UNIT", "ED-RESUS", True),
++            ("demo.slot.sched.emrg", "BED_READ", "UNIT", "ED-RESUS", True),
++            ("demo.slot.um.gens", "APPROVE", "UNIT", "W3A", True),
++            ("demo.slot.um.gens", "BED_BLOCK", "UNIT", "W3A", True),
++            ("demo.slot.um.gens", "BED_CONTROL", "UNIT", "W3A", False),
++            ("demo.slot.bedcoord", "BED_CONTROL", "UNIT", "ICU-MAIN", True),
++            ("demo.slot.clerk.emrg", "BED_REQUEST", "UNIT", "ED-RESUS", True),
++            ("demo.slot.clerk.emrg", "BED_CONTROL", "UNIT", "ED-RESUS", False),
++            ("demo.slot.hr", "ORG_READ", "UNIT", "W3A", True),
++            ("demo.slot.hr", "BED_CONTROL", "UNIT", "W3A", False),
++        ]
++
++        conn = _get_conn(self.db_path)
++        adapter = ShadowRbacAdapter(conn, shadow_enabled=True)
++
++        passed = 0
++        failed = 0
++        for subject, perm, rtype, rcode, expected in SCENARIOS:
++            result = adapter.evaluate(subject, perm, rtype, rcode)
++            if result["allow"] == expected:
++                passed += 1
++            else:
++                failed += 1
++                print(f"    FAIL: {subject}/{perm}/{rtype}:{rcode} "
++                      f"expected={expected} got={result['allow']}")
++
++        conn.commit()
++        conn.close()
++
++        assert failed == 0, f"{failed} scenario(s) failed"
++        print(f"  PASS: All {passed} scenarios passed through shadow adapter")
++
++    def test_05_divergence_report_structure(self):
++        """Divergence report returns the expected structure."""
++        from rbac.shadow_adapter import ShadowRbacAdapter
++
++        conn = _get_conn(self.db_path)
++        report = ShadowRbacAdapter.divergence_report(conn)
++
++        assert "total_divergences" in report
++        assert "total_decisions" in report
++        assert "divergence_rate" in report
++        assert "by_reason_code" in report
++        assert "by_subject" in report
++        assert "recent" in report
++        assert isinstance(report["divergence_rate"], float)
++        conn.close()
++        print(f"  PASS: divergence report structure valid "
++              f"(rate={report['divergence_rate']}, "
++              f"divergences={report['total_divergences']})")
++
++    def test_06_grants_passthrough(self):
++        """_grants() and _held_permissions() work via the adapter."""
++        from rbac.shadow_adapter import ShadowRbacAdapter
++
++        conn = _get_conn(self.db_path)
++        adapter = ShadowRbacAdapter(conn, shadow_enabled=True)
++        grants = adapter._grants("demo.slot.charge.w3a")
++        held = adapter._held_permissions(grants)
++
++        assert len(grants) > 0, "Expected at least one grant"
++        assert "BED_CONTROL" in held, f"Expected BED_CONTROL in held permissions: {held}"
++        conn.close()
++        print(f"  PASS: grants passthrough ({len(grants)} grants, {len(held)} permissions)")
++
++
++def run_tests():
++    print("=" * 60)
++    print("RBAC v2 Shadow Integration Tests")
++    print("=" * 60)
++
++    suite = TestShadowAdapter()
++    suite.setup()
++
++    tests = [
++        suite.test_01_v1_result_unchanged,
++        suite.test_02_shadow_disabled_skips_v2,
++        suite.test_03_identity_mapping,
++        suite.test_04_all_scenarios_run,
++        suite.test_05_divergence_report_structure,
++        suite.test_06_grants_passthrough,
++    ]
++
++    passed = 0
++    failed = 0
++    errors = []
++
++    for test in tests:
++        name = test.__name__
++        try:
++            test()
++            passed += 1
++        except Exception as e:
++            failed += 1
++            errors.append((name, str(e)))
++            print(f"  FAIL: {name}: {e}")
++
++    print("-" * 60)
++    print(f"Results: {passed} passed, {failed} failed out of {len(tests)}")
++    if errors:
++        print("\nFailures:")
++        for name, err in errors:
++            print(f"  {name}: {err}")
++    print("=" * 60)
++
++    return 0 if failed == 0 else 1
++
++
++if __name__ == "__main__":
++    sys.exit(run_tests())

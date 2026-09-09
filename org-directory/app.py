@@ -17,7 +17,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
-from rbac.engine import RbacEngine  # noqa: E402
+from rbac.engine import RbacEngine  # noqa: E402  (v1 — used directly when shadow is off)
+from rbac.shadow_adapter import ShadowRbacAdapter  # noqa: E402
 import um  # noqa: E402
 
 DB = HERE / "data" / "org_directory.db"
@@ -27,6 +28,20 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 RBAC_STATUS = "APPROVED"
 RBAC_APPLIED = "2026-09-09"
+
+# Shadow mode: when True, every RBAC evaluation runs v2 alongside v1 and
+# logs divergences.  Set to False to run v1-only (pre-migration) or after
+# cutover to v2-only.
+SHADOW_MODE = os.environ.get("RBAC_SHADOW_MODE", "true").lower() in ("1", "true", "yes")
+
+
+def _v2_tables_exist(conn: sqlite3.Connection) -> bool:
+    """Return True if the v2 shadow schema has been applied."""
+    try:
+        conn.execute("SELECT 1 FROM authorization_policy_v2 LIMIT 0")
+        return True
+    except sqlite3.OperationalError:
+        return False
 
 # (subject, permission, resource_type, resource_code, label, expect_allow)
 SCENARIOS = [
@@ -198,6 +213,7 @@ ROUTES = {
     "/api/rbac/sod": lambda q: rows("SELECT * FROM sod_rule"),
     "/api/rbac/matrix": lambda q: rbac_matrix(),
     "/api/rbac/scenarios": lambda q: run_scenarios(),
+    "/api/rbac/shadow/status": lambda q: shadow_status(),
     "/api/rollup": lambda q: rows(
         """SELECT capacity_class,
                   COUNT(*) AS unit_count,
@@ -289,7 +305,8 @@ def rbac_matrix():
 
 def run_scenarios():
     conn = db()
-    eng = RbacEngine(conn)
+    shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+    eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
     out = []
     for subject, perm, rtype, rcode, label, expect_allow in SCENARIOS:
         res = eng.evaluate(subject, perm, rtype, rcode)
@@ -297,6 +314,8 @@ def run_scenarios():
         res["expected"] = expect_allow
         res["pass"] = res["allow"] == expect_allow
         out.append(res)
+    if shadow_ok:
+        conn.commit()  # persist v2 decision evidence + divergence log
     conn.close()
     return out
 
@@ -326,7 +345,8 @@ def authorize(user: dict, permission: str, resource_type: str, resource_code: st
     """Evaluate an RBAC check for the currently logged-in user."""
     conn = db()
     try:
-        eng = RbacEngine(conn)
+        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+        eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
         res = eng.evaluate(user["persona_code"], permission, resource_type, resource_code)
         log_decision(conn, res)
         conn.commit()
@@ -339,7 +359,8 @@ def my_rbac(user: dict) -> dict:
     """Return the current user's RBAC grants and held permissions."""
     conn = db()
     try:
-        eng = RbacEngine(conn)
+        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+        eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
         grants = eng._grants(user["persona_code"])
         held = sorted(eng._held_permissions(grants))
         return {
@@ -364,7 +385,8 @@ def my_rbac(user: dict) -> dict:
 def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
     conn = db()
     try:
-        eng = RbacEngine(conn)
+        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+        eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
         res = eng.evaluate(
             payload.get("subject", ""),
             payload.get("permission", ""),
@@ -374,7 +396,25 @@ def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
         log_decision(conn, res, mode=mode)
         conn.commit()
         res["mode"] = mode
+        res["shadow_mode"] = shadow_ok
         return res
+    finally:
+        conn.close()
+
+
+def shadow_status() -> dict:
+    """Return shadow-mode status and divergence report."""
+    conn = db()
+    try:
+        v2_exists = _v2_tables_exist(conn)
+        active = SHADOW_MODE and v2_exists
+        report = ShadowRbacAdapter.divergence_report(conn) if active and v2_exists else None
+        return {
+            "shadow_mode_enabled": SHADOW_MODE,
+            "v2_schema_present": v2_exists,
+            "shadow_active": active,
+            "divergence_report": report,
+        }
     finally:
         conn.close()
 
