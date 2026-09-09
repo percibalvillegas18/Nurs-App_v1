@@ -35,8 +35,8 @@ Companion to the implementation plan. Two sections: **import/validation test cas
 | AC-06 | Cleaning SLA escalation | Bed CLEANING > SLA | Prolonged-cleaning alert raised to Charge/Manager. |
 | AC-07 | Threshold alert | Unit occupancy ≥ red threshold | Alert + surge/escalation triggered per §4.3; notification to scope roles. |
 | AC-08 | Surge level ladder | Level breach auto-escalates | Level 1→2→3→4 as conditions persist; escalation ladder followed; decisions logged. |
-| AC-09 | RBAC unit scoping | Charge Nurse (Ward 4A) opens ICU | Denied (403) by row-level scope; no ICU rows returned. |
-| AC-10 | RBAC separation of duties | Scheduler attempts bed release | Denied — no bed-control permission. |
+| AC-09 | RBAC unit scoping | Charge Nurse (Ward 3A / 4A) attempts `BED_CONTROL` on ICU | Denied by `RbacEngine` (permission granted, resource outside unit scope). House census `BED_READ` on ICU is allowed via `HOUSE_VIEW`. Applied 2026-09-09. |
+| AC-10 | RBAC separation of duties | Scheduler attempts bed release | Denied — role has no `BED_CONTROL`; SoD blocks holding both with `SCHED_WRITE`. Applied 2026-09-09. |
 | AC-11 | Audit completeness | Any bed/registry/assignment change | Immutable log row: who/what/when/before/after/reason/source; retrievable in Audit viewer. |
 | AC-12 | Capacity reconciliation | Daily census vs bed-registry occupancy | Deltas reported; mismatch =0 or explicit explainable exceptions. |
 | AC-13 | Licensed-capacity integrity | `sum(bed is_licensed)` per inpatient unit | Equals unit `licensed_capacity` for `INPATIENT_LICENSED` only; OR/clinic/support have 0 licensed beds. |

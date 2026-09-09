@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIGH Org Directory — Wave P1</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="guest">
+  <div id="gate" class="gate">
+    <div class="login-wrap panel">
+      <div class="brand-kicker">AIGH · Riyadh</div>
+      <h1>Sign in</h1>
+      <p class="sub">Click a person. Demo password <code>Demo@2026</code> is sent for you — no typing.</p>
+      <div class="enter-list">
+        <button type="button" class="save enter" data-u="fatimah.al.harbi">Fatimah Al-Harbi — Charge Nurse, W3A</button>
+        <button type="button" class="save enter" data-u="hassan.al.ghamdi">Hassan Al-Ghamdi — Staff Nurse, W3A</button>
+        <button type="button" class="save enter" data-u="noura.al.qahtani">Noura Al-Qahtani — Charge Nurse, ICU</button>
+        <button type="button" class="save enter" data-u="sara.al.dosari">Sara Al-Dosari — Scheduler, Emergency</button>
+        <button type="button" class="save enter" data-u="layla.al.saud">Layla Al-Saud — Director of Nursing</button>
+        <button type="button" class="save enter" data-u="ibrahim.al.nemer">Ibrahim Al-Nemer — System Admin</button>
+      </div>
+      <p class="muted" style="margin-top:18px">Or pick anyone:</p>
+      <select id="gate-user"></select>
+      <button type="button" class="save" id="gate-go" style="margin-top:10px">Log in as selected</button>
+      <p class="err" id="gate-err"></p>
+    </div>
+  </div>
+  <aside class="nav">
+    <div class="brand-kicker">AIGH · Riyadh</div>
+    <div class="brand">Nursing Org Directory</div>
+    <button data-view="overview" class="active">Overview</button>
+    <button data-view="units">Units &amp; capacity</button>
+    <button data-view="org">Org tree</button>
+    <button data-view="positions">Positions</button>
+    <button data-view="coverage">Coverage map</button>
+    <button data-view="profile">My profile</button>
+    <button data-view="people">People (demo slots)</button>
+    <button data-view="rbac">RBAC module</button>
+    <button data-view="audit">Desk audit</button>
+    <button data-view="api">Consumer APIs</button>
+    <div class="who" id="who"></div>
+    <button type="button" id="logout">Log out</button>
+  </aside>
+  <main class="main">
+    <div class="banner" id="banner"></div>
+    <div id="app">Loading registry…</div>
+  </main>
+  <script>
+    (function () {
+      var KEY = "hnwms_token";
+      var PW = "Demo@2026";
+      var err = document.getElementById("gate-err");
+      function fail(m) { err.textContent = m || "Could not sign in"; }
+      async function enter(username) {
+        err.textContent = "Signing in…";
+        try {
+          var r = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: username, password: PW })
+          });
+          var d = await r.json();
+          if (!d.ok || !d.token) { fail(d.error || ("HTTP " + r.status)); return; }
+          window.__HNWMS_TOKEN = d.token;
+          try {
+            sessionStorage.setItem(KEY, d.token);
+            localStorage.setItem(KEY, d.token);
+          } catch (e) {}
+          document.getElementById("gate").style.display = "none";
+          document.body.classList.remove("guest");
+          location.hash = "profile";
+          if (window.hnwmsBoot) window.hnwmsBoot();
+          else fail("App did not start. Refresh once.");
+        } catch (e) { fail(String(e)); }
+      }
+      document.querySelectorAll(".enter").forEach(function (b) {
+        b.addEventListener("click", function () { enter(b.getAttribute("data-u")); });
+      });
+      document.getElementById("gate-go").addEventListener("click", function () {
+        var u = document.getElementById("gate-user").value;
+        if (u) enter(u);
+      });
+      fetch("/api/auth/accounts").then(function (r) { return r.json(); }).then(function (pack) {
+        var sel = document.getElementById("gate-user");
+        (pack.accounts || []).forEach(function (a) {
+          var o = document.createElement("option");
+          o.value = a.username;
+          o.textContent = a.display_name + " — " + a.job_title;
+          if (a.username === "fatimah.al.harbi") o.selected = true;
+          sel.appendChild(o);
+        });
+      }).catch(function () {});
+      if (sessionStorage.getItem(KEY)) {
+        document.getElementById("gate").style.display = "none";
+        document.body.classList.remove("guest");
+      }
+    })();
+  </script>
+  <script src="/app.js"></script>
+</body>
+</html>

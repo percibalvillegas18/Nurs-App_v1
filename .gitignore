@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+org-directory/data/*.db
+org-directory/data/*.db-journal
+org-directory/data/uploads/
+.DS_Store

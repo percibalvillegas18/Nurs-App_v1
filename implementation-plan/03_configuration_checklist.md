@@ -31,9 +31,9 @@ Use as the build/QA checklist alongside `01_implementation_plan.md`. Items are g
 - [ ] Bed lifecycle state machine live (READY/RESERVED/OCCUPIED/CLEANING/OUT_OF_SERVICE/BLOCKED) with state-log auditing.
 
 ## D. RBAC & scoping (Wave P1/P2)
-- [ ] Create roles per §3 role catalogue; bind each grant to FACILITY/DEPARTMENT/UNIT scope.
-- [ ] Charge Nurse scoped to own unit only; Unit Manager to own department/units; House Supervisor/DON facility-wide.
-- [ ] Separate **bed control** permissions from **scheduling** permissions.
+- [x] Create roles per §3 role catalogue; bind each grant to FACILITY/DEPARTMENT/UNIT scope. **Applied 2026-09-09** (`rbac/` + Org Directory).
+- [x] Charge Nurse scoped to own unit only; Unit Manager to own department/units; House Supervisor/DON facility-wide.
+- [x] Separate **bed control** permissions from **scheduling** permissions (SoD; `SYS_ADMIN` waive only).
 - [ ] Set up delegation & auto-escalation ladder (Charge→Manager→Deputy DON→DON).
 - [ ] MFA on privileged roles; quarterly recertification scheduled.
 
