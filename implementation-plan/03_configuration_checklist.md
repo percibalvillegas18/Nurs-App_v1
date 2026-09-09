@@ -26,7 +26,7 @@ Use as the build/QA checklist alongside `01_implementation_plan.md`. Items are g
 - [ ] Provision room/bed records from `licensed_capacity` (Bed-registry mode) or store capacity only (Capacity mode).
 - [ ] Validate `bed` count == `licensed_capacity` per unit; flag any mismatch.
 - [ ] Set bed features/classes (ICU=telemetry/vent, isolation/neg-pressure units flagged).
-- [ ] Physical room/bed audit: reconcile synthetic numbering to actual signage.
+- [ ] Physical room/bed audit: reconcile synthetic numbering to actual signage and unit bed counts — use `artifacts/physical_bed_audit_form.md`. This also resolves DQ-1/DQ-2 (duplicate vs real second site) per `07_adjudication_decision_records.md`.
 - [ ] Bed lifecycle state machine live (READY/RESERVED/OCCUPIED/CLEANING/OUT_OF_SERVICE/BLOCKED) with state-log auditing.
 
 ## D. RBAC & scoping (Wave P1/P2)

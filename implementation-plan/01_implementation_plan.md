@@ -185,12 +185,12 @@ Each step writes an audit entry and, where integration is live, emits the HL7 AD
 - `licensed_capacity` integer ≥ 0; ≤ facility licensed total; bed count matches capacity (bed-registry mode).
 - Care-setting must be consistent with bedded/non-bedded (support/admin → no beds).
 - Position level L1–L7; assignment scope exists in location registry; no orphan scopes.
-- Duplicate/near-duplicate names (e.g., "ICU Extension" vs "ICU Extension (2nd Location)") flagged for manual adjudication.
+- Duplicate/near-duplicate names (e.g., "ICU Extension" vs "ICU Extension (2nd Location)") flagged for adjudication — dispositions & decision records in `07_adjudication_decision_records.md`, confirmed by the physical audit.
 
 ### 5.5 Reconciliation
 - **Migration-time:** count & total checks vs source (raw 524 beds; 4 depts; 38 bed-count rows + 5 blank-bed support rows; 43 units) and vs **operational target** (515 assignable; 36 bedded + 7 non-bedded). The 9-bed delta is the `06` DQ-9 adjudication (EDAD 7 + ORAD 2). Compare staged vs loaded vs source and report exact deltas with the adjudication delta separately documented.
 - **Operating-time:** daily *census vs bed-registry occupancy*; weekly *capacity config vs licensing submission*; monthly *full audit vs source of truth*. Every run produces a signed reconciliation report (see P0/P5).
-- **Physical count audit** at Wave P2 to validate the auto-provisioned room/bed numbering assumption.
+- **Physical count audit** at Wave P2 to validate the auto-provisioned room/bed numbering assumption (see `artifacts/physical_bed_audit_form.md`); the same run settles the DQ-1/DQ-2 duplicate-vs-real-site adjudications (`07_adjudication_decision_records.md`).
 
 ### 5.6 Test cases
 Full table in `05_test_acceptance_criteria.md`; includes CSV with 39/32/32/3/7 rows, ICU Extension duplicate ambiguity, embedded-newline field parsing, blank-bed support rows, orphan unit, boundary capacity 0, negative, non-numeric.

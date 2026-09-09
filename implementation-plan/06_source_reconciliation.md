@@ -39,8 +39,8 @@ This document records the **data-quality analysis** of the two source files, the
 
 | # | Finding | Detail | Recommended disposition |
 |---|---|---|---|
-| DQ-1 | **Near-duplicate unit names** | `ICU Extension` (Critical Care, 14) vs `ICU Extension (2nd Location)` (Gen & Spec, 14); `Plaster Unit` (Surgical, 9) vs `Plaster Unit (2nd Location)` (Gen & Spec, 9) | Confirm whether these are genuinely two physical sites or a duplicate row assigned to the wrong department. If two sites, keep both with distinct codes; if duplicate, correct the department. **Blocking** for clean loading. |
-| DQ-2 | **Spelling inconsistency** | `ED Navigation` (3, Emergency) vs `ED Navigator (2nd Location)` (5, Gen & Spec) | Adjudicate intended name; align taxonomy. |
+| DQ-1 | **Near-duplicate unit names** | `ICU Extension` (Critical Care, 14) vs `ICU Extension (2nd Location)` (Gen & Spec, 14); `Plaster Unit` (Surgical, 9) vs `Plaster Unit (2nd Location)` (Gen & Spec, 9) | Confirm whether these are genuinely two physical sites or a duplicate row assigned to the wrong department. If two sites, keep both with distinct codes; if duplicate, correct the department. **Blocking** for clean loading. **Proposed dispositions & decision record: `07_adjudication_decision_records.md`; resolved by the physical audit (`artifacts/physical_bed_audit_form.md`).** |
+| DQ-2 | **Spelling inconsistency** | `ED Navigation` (3, Emergency) vs `ED Navigator (2nd Location)` (5, Gen & Spec) | Adjudicate intended name; align taxonomy. **Proposed dispositions & decision record: `07_adjudication_decision_records.md`; resolve via physical audit.** |
 | DQ-3 | **Inconsistent group labels** | `SPECIALIZED & DIAGNOSTIC` and `DIAGNOSTIC & SPECIALTY` both appear as parenthetical group prefixes | Normalize both to a single controlled value (this plan uses `SPECIALIZED & DIAGNOSTIC`). |
 | DQ-4 | **Support/admin rows have blank Bed** | 5 rows under "SUPPORT & ADMINISTRATIVE SERVICES - …" carry no bed count | Treat as **non-bedded locations** (`is_bedded=false`), NOT missing data. Requires confirmation that these truly have no beds. |
 | DQ-5 | **Malformed cell** | Endoscopy row: `"(DIAGNOSTIC & SPECIALTY) \n\tEndoscopy Unit"` contains embedded newline+tab inside the quoted field | Parser must handle embedded separators (correctly does); normalizes to group `SPECIALIZED & DIAGNOSTIC`, unit `Endoscopy Unit`, capacity 5. |
@@ -81,9 +81,10 @@ Levels and example `position_code`s:
 1. **DQ-1/DQ-2** — definitive names & departments for the duplicate/spelling pairs (ICU Extension, Plaster Unit, ED Navigator).
 2. **DQ-4** — confirmation the 5 support areas are non-bedded.
 3. **DQ-9** — confirmation `ED Administration & Support` (7) and `OR Administration & Support` (2) are non-assignable support spaces (operational capacity = 515 vs source 524); align licensed vs operational capacity wording with the licensing body.
-4. **Bed granularity** — capacity-mode vs bed-registry-mode; if registry, approve room-bay sizing & conduct physical audit.
-4. **Org scope** — confirm whether to model the full hospital org chart or nursing line only for RBAC (recommend: both, nursing line detailed for clinical roles).
-5. **Regulatory body** — confirm governing accreditation/licensing & bed-license registry (e.g., CBAHI/MOH) that the capacity numbers must reconcile to.
-6. **Owners/RACI** sign-off per `01_implementation_plan.md` §9.
+4. **Bed granularity** — capacity-mode vs bed-registry-mode; if registry, approve room-bay sizing & conduct physical audit using `artifacts/physical_bed_audit_form.md`.
+5. **DQ-1/DQ-2 dispositions** — confirm per `07_adjudication_decision_records.md` (merge duplicate vs keep+re-parent vs reclassify) using the physical-audit results.
+6. **Org scope** — confirm whether to model the full hospital org chart or nursing line only for RBAC (recommend: both, nursing line detailed for clinical roles).
+7. **Regulatory body** — confirm governing accreditation/licensing & bed-license registry (e.g., CBAHI/MOH) that the capacity numbers must reconcile to.
+8. **Owners/RACI** sign-off per `01_implementation_plan.md` §9.
 
 After sign-off, proceed to `03_configuration_checklist.md` Wave P0/P1.
