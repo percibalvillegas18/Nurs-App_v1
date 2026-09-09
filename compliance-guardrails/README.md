@@ -2,7 +2,7 @@
 
 Implementation-ready design for an **automated compliance/guardrail layer** inside the Hospital Nursing Workforce Management System (HNWMS) — turning Saudi Labor Law (HRSD/MOL), CBAHI, and Hospital Policy requirements into real-time **ALLOW / INFORM / WARN / BLOCK** controls at the Staff Master → Deployment/Scheduling/Attendance/Leave control points.
 
-Read order: **`01_architecture_integration.md`** → `02_rules_data_model.md` → `03_compliance_rule_catalog.md` → `04_guardrail_controls_by_module.md` → `05_severity_exceptions_approvals.md` → `06_dashboards_kpis_reports.md` → `07_test_acceptance_criteria.md` → `08_api_wire_examples.md`.
+Read order: **`01_architecture_integration.md`** → `02_rules_data_model.md` → `03_compliance_rule_catalog.md` → `04_guardrail_controls_by_module.md` → `05_severity_exceptions_approvals.md` → `06_dashboards_kpis_reports.md` → `07_test_acceptance_criteria.md` → `08_api_wire_examples.md` → `09_vendor_contract_sheet.md`.
 
 ## Document map
 | # | Document | Contents |
@@ -15,6 +15,7 @@ Read order: **`01_architecture_integration.md`** → `02_rules_data_model.md` �
 | 06 | Dashboards, KPIs & reports | Nursing Director KPIs, dashboard layers, alerts, report set |
 | 07 | Test & acceptance criteria | Rules-engine + per-domain + exception/audit + KPI test cases |
 | 08 | API & FHIR/HL7 wire examples | REST `/compliance/evaluate` (ALLOW/WARN/BLOCK) + FHIR R4 Task/OperationOutcome + HL7 ADT A01/A02/A03 → census → staffing contract |
+| 09 | Vendor contract sheet | One-page distilled integration contract to hand an HIS/EMR/Payroll/Scheduling vendor |
 
 ## Artifacts
 | File | Contents |

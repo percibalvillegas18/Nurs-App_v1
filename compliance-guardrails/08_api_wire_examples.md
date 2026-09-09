@@ -3,6 +3,8 @@
 **Version:** 1.0 · **Date:** 2026-09-09
 **Purpose:** Concrete request/response contracts ("wire format") for the **Compliance Rules Engine** and its integration with Scheduling/Attendance/Leave/Deployment and with the HIS/EMR (via the bed/org location registry and census). These make the architecture in `01_architecture_integration.md` directly implementable and give vendors/build teams exact field names, payloads, and outcomes.
 
+> **Vendor-facing:** A one-page distilled version for hand-off to an HIS/EMR/Payroll/Scheduling vendor is in **`09_vendor_contract_sheet.md`** (source of truth remains this document).
+
 Companions: `01_architecture_integration.md` (architecture/evaluation points), `04_guardrail_controls_by_module.md` (which rule fires where), `05_severity_exceptions_approvals.md` (severity/exceptions). REST uses a consistent `ComplianceEvaluation` envelope; clinical interchange uses **FHIR R4** (`Task`, `OperationOutcome`) and **HL7 v2** (`ADT A01/A02/A03`) so the layer interoperates with standard HIS/EMR/Payroll rather than a private format.
 
 ---
