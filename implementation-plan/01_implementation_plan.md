@@ -99,7 +99,7 @@ Full ERD in `02_erd_data_model.md`. Summary here. Three domains:
 
 ## 3. RBAC: Roles, Supervisory Hierarchy & Department-based Access
 
-**Status (2026-09-09): APPROVED and applied.** Live contract: `rbac/README.md` + `rbac/engine.py`. Org Directory serves `/api/rbac/evaluate`. ADT, Scheduling, and HNWMS must evaluate before bed control or roster publish. User management (login, My profile, files) is separate in `org-directory/` and is not SSO/MFA.
+**Status (2026-09-09): v1 prototype loaded; not production-approved.** Live compatibility contract: `rbac/README.md` + `rbac/engine.py`. Org Directory serves `/api/rbac/evaluate`, but protected ADT, scheduling, and HNWMS writes still require transaction-bound server enforcement. The v2 identity/authorization package is shadow-only pending governance approval. User management (login, My profile, files) is separate in `org-directory/` and is not SSO/MFA.
 
 **Model = RBAC (role→permission) + data scoping (role grant bound to dept/unit) + org hierarchy (for delegation/escalation).** Three tables: `role`, `role_grant(user_or_position, scope_facility/dept/unit)`, `permission`. Delegation ladder is specified here but **not built** yet.
 

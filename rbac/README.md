@@ -1,9 +1,12 @@
 # HNWMS RBAC module
 
-**Status:** APPROVED and applied 2026-09-09.
+**Status:** v1 prototype contract applied 2026-09-09; not a production identity/authentication system.
 
-Live engine: `rbac/engine.py` via Org Directory `/api/rbac/evaluate`.  
-People log in on Org Directory (password `Demo@2026`), complete **My profile**, and attach recommended files. That is user management, not this module.
+Live engine: `rbac/engine.py` via Org Directory `/api/rbac/evaluate`. The v2
+package under `rbac-v2/` is shadow-only until its blocking governance,
+identity, clinical-safety, and rollout gates are signed. `RBAC_SHADOW_MODE`
+does not itself switch enforcement to v2.
+In the isolated demo, people can log in through Org Directory and complete **My profile**. Demo/local credentials are not production authentication; production must use SSO/MFA and immutable HR-linked identities. That identity plane is separate from this module.
 
 ## RBAC is not user management
 

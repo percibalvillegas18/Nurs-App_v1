@@ -7,14 +7,16 @@ Pre-conditions (verified by this script before proceeding):
   3. Minimum sample size has been reached
 
 What the cutover does:
-  - Updates the RBAC_STATUS marker
-  - Patches migrated identity accounts from PENDING_VERIFICATION → ACTIVE
-    (the v2 CHECK constraint for ACTIVE HUMAN accounts requires email, so
-    we relax the check by adding a migration-era email placeholder)
+  - Verifies that policy, shadow evidence, mappings, and real verified
+    identities meet the cutover gate
+  - Does not activate pending/demo/legacy-local accounts and does not create
+    placeholder email addresses
   - Records the cutover event in registry_event
   - Prints a summary
 
-After cutover, set RBAC_SHADOW_MODE=false to stop running both engines.
+This script does not switch runtime enforcement. After an approved cutover,
+use the deployment's explicit v2-enforced mode and verify transaction-bound
+PDP middleware; `RBAC_SHADOW_MODE=false` currently selects the v1 prototype.
 
 Usage:
     python3 rbac/cutover_v2.py [--db path/to/org_directory.db] [--force]
@@ -38,7 +40,7 @@ MAX_DIVERGENCE_RATE = 0.0     # must be exactly zero
 def main():
     parser = argparse.ArgumentParser(description="RBAC v1→v2 cutover")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
-    parser.add_argument("--force", action="store_true", help="Skip pre-condition checks")
+    parser.add_argument("--force", action="store_true", help="Skip sample/divergence checks only; identity gates remain mandatory")
     parser.add_argument("--dry-run", action="store_true", help="Check only, don't apply")
     args = parser.parse_args()
 
@@ -90,7 +92,8 @@ def main():
                   f"Fix divergences first or use --force.")
             return 1
 
-    # Check identity mapping completeness
+    # Check identity mapping completeness. This is never bypassed by
+    # --force: a cutover must not turn demo slots into active human accounts.
     unmapped = conn.execute(
         """SELECT COUNT(*) c FROM persona p
            WHERE NOT EXISTS (
@@ -100,42 +103,30 @@ def main():
            )"""
     ).fetchone()["c"]
     if unmapped > 0:
-        print(f"WARN: {unmapped} v1 personas have no v2 identity mapping")
-        if not args.force:
-            print("FAIL: All personas must be mapped. Use --force to override.")
-            return 1
+        print(f"FAIL: {unmapped} v1 personas have no v2 identity mapping")
+        return 1
+
+    identity_debt = conn.execute(
+        """SELECT COUNT(*) c FROM identity_account_v2
+           WHERE account_type='HUMAN'
+             AND (account_status <> 'ACTIVE'
+                  OR auth_provider IN ('LEGACY_LOCAL','LOCAL')
+                  OR email_verified_at IS NULL)"""
+    ).fetchone()["c"]
+    if identity_debt > 0:
+        print(f"FAIL: {identity_debt} human identity accounts are not real, verified production identities")
+        print("      Complete HR/SSO/MFA migration and verification before cutover.")
+        return 1
 
     if args.dry_run:
         print("\n  DRY RUN — pre-conditions passed. No changes applied.")
         return 0
 
-    # ── 2. Activate migrated accounts ───────────────────────────────
-
-    # Add placeholder emails to PENDING_VERIFICATION accounts so the
-    # v2 CHECK constraint (email required for ACTIVE HUMAN) is satisfied.
-    pending = conn.execute(
-        """SELECT ia.user_id, sm.display_name, p.persona_code
-           FROM identity_account_v2 ia
-           JOIN identity_staff_link_v2 isl ON isl.user_id = ia.user_id
-           JOIN staff_member_v2 sm ON sm.staff_id = isl.staff_id
-           JOIN persona p ON p.persona_id = sm.legacy_persona_id
-           WHERE ia.account_status = 'PENDING_VERIFICATION'
-             AND ia.account_type = 'HUMAN'"""
-    ).fetchall()
-
+    # ── 2. No identity activation is performed here ─────────────────
+    # Account lifecycle belongs to the approved HR/SSO migration. In
+    # particular, do not manufacture @migrated.local addresses or mark them
+    # as verified merely to satisfy a database CHECK constraint.
     activated = 0
-    for acct in pending:
-        placeholder_email = f"{acct['persona_code']}@migrated.local"
-        conn.execute(
-            """UPDATE identity_account_v2
-               SET email_normalized = ?, email_verified_at = ?,
-                   account_status = 'ACTIVE', updated_at = ?
-               WHERE user_id = ?""",
-            (placeholder_email, now, now, acct["user_id"]),
-        )
-        activated += 1
-
-    print(f"  Activated {activated} migrated accounts")
 
     # ── 3. Record cutover event ─────────────────────────────────────
 
@@ -150,9 +141,9 @@ def main():
     conn.commit()
     conn.close()
 
-    print(f"\n  CUTOVER COMPLETE at {now}")
-    print(f"  Next step: set RBAC_SHADOW_MODE=false in your environment")
-    print(f"  to stop running the v1 engine alongside v2.")
+    print(f"\n  CUTOVER GATE COMPLETE at {now}")
+    print("  No runtime mode was changed. Deploy the separately approved")
+    print("  v2-enforced mode only after transaction-bound PDP checks are live.")
     return 0
 
 

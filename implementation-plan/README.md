@@ -29,4 +29,4 @@ Implementation-ready deliverables for ingesting the organizational chart, depart
 - **Proposed licensed inpatient: 281** (14 units, includes pending `ICU-EXT-2`) or **267** if DQ-1a is merged. ED stretchers **118** (UCC re-parented to Emergency). Patient-placeable (inpatient+ED+PACU) **407**.
 - Occupancy % uses operational **inpatient** beds, not 515/524.
 - Start at **Wave P0**: get `08_signoff_don_licensing.md` signed, walk the floor with `artifacts/physical_bed_audit_unit_sheets.csv`.
-- **Wave P1 (loaded, unsigned P0):** Org Directory app in `../org-directory/` — 43 units, org tree, consumer APIs. **RBAC APPROVED and applied 2026-09-09** (`../rbac/`). Do not treat bed counts as production until P0 is signed.
+- **Wave P1 (loaded, unsigned P0):** Org Directory app in `../org-directory/` — 43 units, org tree, consumer APIs. **RBAC v1 prototype loaded 2026-09-09; v2 remains shadow-only pending governance approval** (`../rbac/`). Do not treat bed counts or authorization as production until P0 and the v2 gates are signed.

@@ -35,16 +35,28 @@ class RbacV2Engine:
         at: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Evaluate and append one reproducible shadow decision."""
-        prior = self._prior(request_id)
-        if prior is not None:
-            return prior
+        """Evaluate and append one reproducible shadow decision.
 
+        ``request_id`` is an idempotency key, not a bearer capability. A
+        caller reusing it with a different subject, permission, resource,
+        policy, or context must not receive the original decision.
+        """
+        request_id = str(request_id or "").strip()
+        account_uuid = str(account_uuid or "").strip()
         at = at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        resource_type = resource_type.upper().strip()
-        permission_code = permission_code.upper().strip()
+        resource_type = (resource_type or "").upper().strip()
+        permission_code = (permission_code or "").upper().strip()
+        resource_code = (resource_code or "").strip()
+        policy_version = (policy_version or "").strip()
         context_json = json.dumps(context or {}, sort_keys=True, separators=(",", ":"))
 
+        if not request_id:
+            return self._request_id_error("", "REQUEST_ID_REQUIRED", policy_version)
+
+        account = self.conn.execute(
+            "SELECT * FROM identity_account_v2 WHERE account_uuid=?",
+            (account_uuid,),
+        ).fetchone()
         policy = self.conn.execute(
             """SELECT * FROM authorization_policy_v2
                WHERE version_code=? AND status='ACTIVE'
@@ -52,6 +64,16 @@ class RbacV2Engine:
                  AND (effective_to IS NULL OR effective_to > ?)""",
             (policy_version, at, at),
         ).fetchone()
+
+        prior = self._prior(request_id)
+        if prior is not None:
+            if self._prior_matches(
+                prior, account, policy, permission_code, resource_type,
+                resource_code, policy_version, context_json,
+            ):
+                return prior
+            return self._request_id_error(request_id, "REQUEST_ID_REUSE", policy_version)
+
         if policy is None:
             return self._record(
                 request_id, at, None, permission_code, resource_type, resource_code,
@@ -59,10 +81,6 @@ class RbacV2Engine:
                 None, None, None, policy_version, 0, context_json, [],
             )
 
-        account = self.conn.execute(
-            "SELECT * FROM identity_account_v2 WHERE account_uuid=?",
-            (account_uuid,),
-        ).fetchone()
         if account is None or account["account_status"] != "ACTIVE":
             return self._record(
                 request_id, at, account["user_id"] if account else None,
@@ -213,8 +231,12 @@ class RbacV2Engine:
             """SELECT g.grant_id, NULL AS delegation_id, rp.permission_id,
                       s.scope_id, s.scope_type, s.facility_id, s.department_id, s.unit_id
                FROM access_grant_v2 g
+               JOIN authorization_role_v2 ar
+                 ON ar.role_id=g.role_id AND ar.policy_id=g.policy_id AND ar.status='ACTIVE'
                JOIN authorization_role_permission_v2 rp
                  ON rp.role_id=g.role_id AND rp.policy_id=g.policy_id
+               JOIN authorization_permission_v2 ap
+                 ON ap.permission_id=rp.permission_id AND ap.policy_id=rp.policy_id AND ap.status='ACTIVE'
                JOIN authorization_scope_v2 s ON s.scope_id=g.scope_id AND s.status='ACTIVE'
                WHERE g.user_id=? AND g.policy_id=? AND g.status='ACTIVE'
                  AND g.effective_from <= ?
@@ -230,6 +252,10 @@ class RbacV2Engine:
                FROM delegation_v2 d
                JOIN delegation_permission_v2 dp ON dp.delegation_id=d.delegation_id
                JOIN access_grant_v2 g ON g.grant_id=d.source_grant_id
+               JOIN authorization_role_v2 ar
+                 ON ar.role_id=g.role_id AND ar.policy_id=g.policy_id AND ar.status='ACTIVE'
+               JOIN authorization_permission_v2 ap
+                 ON ap.permission_id=dp.permission_id AND ap.policy_id=d.policy_id AND ap.status='ACTIVE'
                JOIN authorization_scope_v2 s ON s.scope_id=d.scope_id AND s.status='ACTIVE'
                WHERE d.delegate_user_id=? AND d.policy_id=? AND d.status='ACTIVE'
                  AND d.starts_at <= ? AND d.expires_at > ?
@@ -319,6 +345,39 @@ class RbacV2Engine:
         ).fetchone()
         return {"type": "UNIT", "facility_id": row["facility_id"], "department_id": row["department_id"], "unit_id": scope["unit_id"]}
 
+    @staticmethod
+    def _prior_matches(
+        prior: dict[str, Any], account: sqlite3.Row | None, policy: sqlite3.Row | None,
+        permission_code: str, resource_type: str, resource_code: str,
+        policy_version: str, context_json: str,
+    ) -> bool:
+        if account is None or account["account_status"] != "ACTIVE" or policy is None:
+            return False
+        resource = prior.get("resource") or {}
+        return (
+            prior.get("user_id") == account["user_id"]
+            and prior.get("permission_code") == permission_code
+            and resource.get("type") == resource_type
+            and resource.get("code") == resource_code
+            and prior.get("policy_version") == policy_version
+            and prior.get("context_json") == context_json
+        )
+
+    @staticmethod
+    def _request_id_error(request_id: str, reason_code: str, policy_version: str) -> dict[str, Any]:
+        return {
+            "decision_id": None,
+            "request_id": request_id,
+            "decision": "ERROR",
+            "allow": False,
+            "reason_code": reason_code,
+            "policy_version": policy_version,
+            "matched_grant_id": None,
+            "delegation_id": None,
+            "sod_rule_ids": [],
+            "requires_part4": False,
+        }
+
     def _prior(self, request_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM authorization_decision_v2 WHERE request_id=?", (request_id,)
@@ -371,6 +430,9 @@ class RbacV2Engine:
             "decision": row["decision"],
             "allow": row["decision"] == "ALLOW",
             "reason_code": row["reason_code"],
+            "permission_code": row["permission_code"],
+            "user_id": row["user_id"],
+            "context_json": row["context_json"],
             "policy_version": row["policy_version"],
             "matched_grant_id": row["matched_grant_id"],
             "delegation_id": row["delegation_id"],

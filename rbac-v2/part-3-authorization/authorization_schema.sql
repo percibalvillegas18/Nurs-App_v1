@@ -36,6 +36,10 @@ BEFORE UPDATE ON authorization_policy_v2
 WHEN OLD.status='RETIRED'
 BEGIN SELECT RAISE(ABORT, 'retired policy is immutable'); END;
 
+-- Exactly one policy may be ACTIVE; callers must name an immutable version.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_authorization_policy_one_active_v2
+ON authorization_policy_v2(status) WHERE status='ACTIVE';
+
 CREATE TABLE IF NOT EXISTS authorization_role_v2 (
     role_id              INTEGER PRIMARY KEY AUTOINCREMENT,
     policy_id            INTEGER NOT NULL REFERENCES authorization_policy_v2(policy_id),

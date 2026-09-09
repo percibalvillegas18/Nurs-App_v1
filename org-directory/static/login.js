@@ -24,8 +24,9 @@
       }
       window.__HNWMS_TOKEN = data.token;
       try {
+        // Keep the bearer only for this tab. The server also sets an
+        // HttpOnly cookie; never persist it in localStorage.
         sessionStorage.setItem(KEY, data.token);
-        localStorage.setItem(KEY, data.token);
       } catch (_) {}
       document.getElementById("gate").style.display = "none";
       document.body.classList.remove("guest");
@@ -43,8 +44,11 @@
     });
   });
   document.getElementById("gate-go").addEventListener("click", function () {
-    var username = document.getElementById("gate-user").value;
+    var manual = document.getElementById("gate-user-manual");
+    var selected = document.getElementById("gate-user");
+    var username = (manual && manual.value.trim()) || (selected && selected.value);
     if (username) enter(username);
+    else fail("Username is required");
   });
 
   fetch("/api/auth/accounts")

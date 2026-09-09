@@ -14,7 +14,7 @@
     <div class="login-wrap panel">
       <div class="brand-kicker">AIGH · Riyadh</div>
       <h1>Sign in</h1>
-      <p class="sub">Click a person. Demo password <code>Demo@2026</code> is sent for you — no typing.</p>
+      <p class="sub">Demo shortcuts are available only when the server explicitly enables demo mode. Otherwise use your username and password.</p>
       <div class="enter-list">
         <button type="button" class="save enter" data-u="fatimah.al.harbi">Fatimah Al-Harbi — Charge Nurse, W3A</button>
         <button type="button" class="save enter" data-u="hassan.al.ghamdi">Hassan Al-Ghamdi — Staff Nurse, W3A</button>
@@ -25,7 +25,11 @@
       </div>
       <p class="muted" style="margin-top:18px">Or pick anyone:</p>
       <select id="gate-user"></select>
-      <button type="button" class="save" id="gate-go" style="margin-top:10px">Log in as selected</button>
+      <label class="sr-only" for="gate-user-manual">Username</label>
+      <input id="gate-user-manual" autocomplete="username" placeholder="Username (SSO/local)" style="margin-top:10px" />
+      <label class="sr-only" for="gate-pw">Password</label>
+      <input id="gate-pw" type="password" autocomplete="current-password" placeholder="Password" style="margin-top:10px" />
+      <button type="button" class="save" id="gate-go" style="margin-top:10px">Log in</button>
       <p class="err" id="gate-err"></p>
     </div>
   </div>

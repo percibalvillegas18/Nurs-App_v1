@@ -1,14 +1,22 @@
 """RBAC evaluator: permission ∩ scope ∩ SoD.
 
-Status: APPROVED and applied 2026-09-09 (Org Directory + HNWMS contract).
+Status: v1 prototype contract applied 2026-09-09; not a production identity or clinical-transaction authorization system.
 Copy this module into HIS consumers. It only needs a DB connection with
 role, role_permission, permission, role_grant, persona, sod_rule,
-nursing_unit, department.
+nursing_unit, department, and facility.
+
+The v1 contract is retained for compatibility, but evaluation is deliberately
+fail-closed for unknown/inactive resources.  A facility grant is not a
+wildcard: the requested resource must resolve through the same active facility
+ancestry as the grant.
 """
 from __future__ import annotations
 
 import sqlite3
 from datetime import date
+
+
+VALID_RESOURCE_TYPES = {"FACILITY", "DEPARTMENT", "UNIT"}
 
 
 class RbacEngine:
@@ -17,19 +25,39 @@ class RbacEngine:
         self.conn.row_factory = sqlite3.Row
 
     def evaluate(self, subject: str, permission: str, resource_type: str, resource_code: str) -> dict:
+        subject = (subject or "").strip()
+        permission = (permission or "").strip().upper()
+        resource_type = (resource_type or "").strip().upper()
+        resource_code = (resource_code or "").strip()
+
+        # Never allow a malformed or unknown resource to match a broad grant.
+        # This is especially important for FACILITY grants, which used to
+        # return True without resolving the requested resource at all.
+        if resource_type not in VALID_RESOURCE_TYPES or not resource_code:
+            return self._deny(
+                subject, permission, resource_type, resource_code,
+                "Unknown or malformed resource",
+            )
+        if not self._resource_exists(resource_type, resource_code):
+            return self._deny(
+                subject, permission, resource_type, resource_code,
+                "Unknown or inactive resource",
+            )
+
         grants = self._grants(subject)
         if not grants:
             return self._deny(subject, permission, resource_type, resource_code, "No active role grant for subject")
 
         held = self._held_permissions(grants)
-        sod = self._sod_hit(held, grants)
-        if sod and permission in (sod["perm_a"], sod["perm_b"]):
-            # SYS_ADMIN waive
-            if not self._waived(sod, grants):
-                return self._deny(
-                    subject, permission, resource_type, resource_code,
-                    f"SoD: {sod['message']}",
-                )
+        for sod in self._sod_hits(held):
+            if permission in (sod["perm_a"], sod["perm_b"]):
+                # A standing waiver is legacy prototype behavior; production
+                # must replace it with event-scoped break-glass.
+                if not self._waived(sod, grants):
+                    return self._deny(
+                        subject, permission, resource_type, resource_code,
+                        f"SoD: {sod['message']}",
+                    )
 
         matching = []
         for g in grants:
@@ -60,6 +88,30 @@ class RbacEngine:
                 "scope_code": g["scope_code"],
             },
         }
+
+    def _resource_exists(self, resource_type: str, resource_code: str) -> bool:
+        """Resolve a resource and its active facility ancestry.
+
+        v1 grants contain free-text scope codes, so this check is the runtime
+        guard until all consumers have moved to the strongly referenced v2
+        scope tables.
+        """
+        if resource_type == "FACILITY":
+            sql = "SELECT 1 FROM facility WHERE facility_code=? AND status='ACTIVE'"
+        elif resource_type == "DEPARTMENT":
+            sql = """SELECT 1
+                     FROM department d JOIN facility f ON f.facility_id=d.facility_id
+                     WHERE d.department_code=? AND d.status='ACTIVE' AND f.status='ACTIVE'"""
+        elif resource_type == "UNIT":
+            sql = """SELECT 1
+                     FROM nursing_unit u
+                     JOIN department d ON d.department_id=u.department_id
+                     JOIN facility f ON f.facility_id=d.facility_id
+                     WHERE u.unit_code=? AND u.status='ACTIVE'
+                       AND d.status='ACTIVE' AND f.status='ACTIVE'"""
+        else:
+            return False
+        return self.conn.execute(sql, (resource_code,)).fetchone() is not None
 
     def _grants(self, subject: str) -> list[dict]:
         today = date.today().isoformat()
@@ -104,22 +156,48 @@ class RbacEngine:
             held.update(g["permissions"])
         return held
 
-    def _sod_hit(self, held: set[str], grants: list[dict]):
+    def _sod_hits(self, held: set[str]) -> list[dict]:
         rules = [dict(r) for r in self.conn.execute("SELECT * FROM sod_rule").fetchall()]
-        for rule in rules:
-            if rule["perm_a"] in held and rule["perm_b"] in held:
-                return rule
-        return None
+        return [
+            rule for rule in rules
+            if rule["perm_a"] in held and rule["perm_b"] in held
+        ]
+
+    def _sod_hit(self, held: set[str], grants: list[dict]):
+        """Compatibility helper for consumers that used the old private method."""
+        hits = self._sod_hits(held)
+        return hits[0] if hits else None
 
     def _waived(self, rule: dict, grants: list[dict]) -> bool:
         waive = {x.strip() for x in (rule.get("waive_roles") or "").split(",") if x.strip()}
         return any(g["role_code"] in waive for g in grants)
 
     def _scope_contains(self, gtype: str, gcode: str, rtype: str, rcode: str) -> bool:
-        gtype, rtype = gtype.upper(), rtype.upper()
+        gtype, rtype = (gtype or "").upper(), (rtype or "").upper()
+        gcode, rcode = (gcode or "").strip(), (rcode or "").strip()
         if gtype == "FACILITY":
-            return True
-        if rtype == "FACILITY":
+            if rtype == "FACILITY":
+                return gcode == rcode and self._resource_exists("FACILITY", rcode)
+            if rtype == "DEPARTMENT":
+                row = self.conn.execute(
+                    """SELECT f.facility_code
+                       FROM department d
+                       JOIN facility f ON f.facility_id=d.facility_id
+                       WHERE d.department_code=? AND d.status='ACTIVE' AND f.status='ACTIVE'""",
+                    (rcode,),
+                ).fetchone()
+                return bool(row) and row["facility_code"] == gcode
+            if rtype == "UNIT":
+                row = self.conn.execute(
+                    """SELECT f.facility_code
+                       FROM nursing_unit u
+                       JOIN department d ON d.department_id=u.department_id
+                       JOIN facility f ON f.facility_id=d.facility_id
+                       WHERE u.unit_code=? AND u.status='ACTIVE'
+                         AND d.status='ACTIVE' AND f.status='ACTIVE'""",
+                    (rcode,),
+                ).fetchone()
+                return bool(row) and row["facility_code"] == gcode
             return False
         if gtype == "DEPARTMENT":
             if rtype == "DEPARTMENT":
@@ -129,10 +207,12 @@ class RbacEngine:
                     """SELECT d.department_code
                        FROM nursing_unit u
                        JOIN department d ON d.department_id = u.department_id
-                       WHERE u.unit_code = ?""",
+                       JOIN facility f ON f.facility_id=d.facility_id
+                       WHERE u.unit_code = ? AND u.status='ACTIVE'
+                         AND d.status='ACTIVE' AND f.status='ACTIVE'""",
                     (rcode,),
                 ).fetchone()
-                return bool(row) and dict(row)["department_code"] == gcode
+                return bool(row) and row["department_code"] == gcode
             return False
         if gtype == "UNIT":
             return rtype == "UNIT" and gcode == rcode

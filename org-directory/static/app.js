@@ -7,7 +7,7 @@ let currentUser = null;
 const TOKEN_KEY = "hnwms_token";
 function getToken() {
   try {
-    return window.__HNWMS_TOKEN || sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || "";
+    return window.__HNWMS_TOKEN || sessionStorage.getItem(TOKEN_KEY) || "";
   } catch (_) {
     return window.__HNWMS_TOKEN || "";
   }
@@ -15,13 +15,10 @@ function getToken() {
 function setToken(t) {
   window.__HNWMS_TOKEN = t || "";
   try {
-    if (t) {
-      sessionStorage.setItem(TOKEN_KEY, t);
-      localStorage.setItem(TOKEN_KEY, t);
-    } else {
-      sessionStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(TOKEN_KEY);
-    }
+    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+    else sessionStorage.removeItem(TOKEN_KEY);
+    // Clear tokens persisted by older builds; new code never writes them.
+    localStorage.removeItem(TOKEN_KEY);
   } catch (_) {}
 }
 const authHeaders = () => {
@@ -358,8 +355,8 @@ const views = {
       `<optgroup label="${esc(cat)}">${list.map((p) => `<option value="${esc(p.persona_code)}">${esc(p.display_name)} — ${esc(p.job_title)}</option>`).join("")}</optgroup>`
     ).join("");
     app.innerHTML = `
-      <h1>RBAC module — applied</h1>
-      <p class="sub">Approved 2026-09-09. Engine is live. People are demo slots (rename on People; needs ORG_WRITE). Hard rule: bed control ≠ scheduling. Charge is unit-scoped.</p>
+      <h1>RBAC module — v1 prototype</h1>
+      <p class="sub">v1 engine applied 2026-09-09. v2 identity/authorization remains shadow-only pending governance approval. People are demo slots (rename on People; needs ORG_WRITE). Hard rule: bed control ≠ scheduling. Charge is unit-scoped.</p>
 
       <div class="panel" style="margin-bottom:16px">
         <h3>Try a decision</h3>

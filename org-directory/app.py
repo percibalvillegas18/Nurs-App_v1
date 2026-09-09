@@ -26,7 +26,7 @@ STATIC = HERE / "static"
 HOST = os.environ.get("BIND_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
 
-RBAC_STATUS = "APPROVED"
+RBAC_STATUS = "V1_PROTOTYPE"
 RBAC_APPLIED = "2026-09-09"
 
 # Shadow mode: when True, every RBAC evaluation runs v2 alongside v1 and
@@ -36,12 +36,37 @@ SHADOW_MODE = os.environ.get("RBAC_SHADOW_MODE", "true").lower() in ("1", "true"
 
 
 def _v2_tables_exist(conn: sqlite3.Connection) -> bool:
-    """Return True if the v2 shadow schema has been applied."""
+    """Return True if the complete v2 shadow schema/seed support is present.
+
+    Checking only ``authorization_policy_v2`` is unsafe: migrations 005-007
+    create that table before migration 008 creates the policy data and the
+    divergence log. Treat a partial install as v1-only rather than running a
+    shadow adapter that cannot persist evidence.
+    """
+    required = (
+        "authorization_policy_v2",
+        "identity_account_v2",
+        "authorization_decision_v2",
+        "rbac_shadow_divergence_log",
+    )
     try:
-        conn.execute("SELECT 1 FROM authorization_policy_v2 LIMIT 0")
+        for table in required:
+            conn.execute(f"SELECT 1 FROM {table} LIMIT 0")
         return True
     except sqlite3.OperationalError:
         return False
+
+
+def _v2_runtime_ready(conn: sqlite3.Connection) -> bool:
+    """Return True only when the seeded shadow policy is actually usable."""
+    if not _v2_tables_exist(conn):
+        return False
+    row = conn.execute(
+        """SELECT 1 FROM authorization_policy_v2
+           WHERE status='ACTIVE' AND effective_from IS NOT NULL
+           LIMIT 1"""
+    ).fetchone()
+    return row is not None
 
 # (subject, permission, resource_type, resource_code, label, expect_allow)
 SCENARIOS = [
@@ -129,7 +154,7 @@ def summary():
         "pending_dq": pending,
         "rbac": RBAC_STATUS,
         "rbac_applied": RBAC_APPLIED,
-        "warning": "P0 unsigned. Do not report 515/524 as licensed beds. Physical audit not walked. RBAC approved.",
+        "warning": "P0 unsigned. Do not report 515/524 as licensed beds. Physical audit not walked. RBAC v1 prototype; v2 gates are pending.",
     }
 
 
@@ -305,7 +330,7 @@ def rbac_matrix():
 
 def run_scenarios():
     conn = db()
-    shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+    shadow_ok = SHADOW_MODE and _v2_runtime_ready(conn)
     eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
     out = []
     for subject, perm, rtype, rcode, label, expect_allow in SCENARIOS:
@@ -345,7 +370,7 @@ def authorize(user: dict, permission: str, resource_type: str, resource_code: st
     """Evaluate an RBAC check for the currently logged-in user."""
     conn = db()
     try:
-        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+        shadow_ok = SHADOW_MODE and _v2_runtime_ready(conn)
         eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
         res = eng.evaluate(user["persona_code"], permission, resource_type, resource_code)
         log_decision(conn, res)
@@ -359,7 +384,7 @@ def my_rbac(user: dict) -> dict:
     """Return the current user's RBAC grants and held permissions."""
     conn = db()
     try:
-        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+        shadow_ok = SHADOW_MODE and _v2_runtime_ready(conn)
         eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
         grants = eng._grants(user["persona_code"])
         held = sorted(eng._held_permissions(grants))
@@ -385,7 +410,7 @@ def my_rbac(user: dict) -> dict:
 def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
     conn = db()
     try:
-        shadow_ok = SHADOW_MODE and _v2_tables_exist(conn)
+        shadow_ok = SHADOW_MODE and _v2_runtime_ready(conn)
         eng = ShadowRbacAdapter(conn, shadow_enabled=shadow_ok) if shadow_ok else RbacEngine(conn)
         res = eng.evaluate(
             payload.get("subject", ""),
@@ -407,11 +432,13 @@ def shadow_status() -> dict:
     conn = db()
     try:
         v2_exists = _v2_tables_exist(conn)
-        active = SHADOW_MODE and v2_exists
-        report = ShadowRbacAdapter.divergence_report(conn) if active and v2_exists else None
+        v2_ready = _v2_runtime_ready(conn)
+        active = SHADOW_MODE and v2_ready
+        report = ShadowRbacAdapter.divergence_report(conn) if active else None
         return {
             "shadow_mode_enabled": SHADOW_MODE,
             "v2_schema_present": v2_exists,
+            "v2_runtime_ready": v2_ready,
             "shadow_active": active,
             "divergence_report": report,
         }
@@ -419,7 +446,25 @@ def shadow_status() -> dict:
         conn.close()
 
 
-PUBLIC_API = {"/api/health", "/api/auth/login", "/api/auth/accounts"}
+# Account enumeration is useful only for the isolated demo picker. In a
+# normal deployment it is authenticated/admin-only and production users enter
+# their SSO/username without receiving a directory of login identifiers.
+PUBLIC_API = {"/api/health", "/api/auth/login"}
+
+# These endpoints expose grants, audit evidence, or the policy/shadow state.
+# Authentication alone is not enough; callers also need the audit/RBAC read
+# permission. Consumer location data remains available through ORG_READ.
+AUDIT_READ_PATHS = {
+    "/api/events",
+    "/api/roles",
+    "/api/rbac/personas",
+    "/api/rbac/people",
+    "/api/rbac/grants",
+    "/api/rbac/sod",
+    "/api/rbac/matrix",
+    "/api/rbac/scenarios",
+    "/api/rbac/shadow/status",
+}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -471,9 +516,15 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if path.startswith("/api/"):
-            user = None if path in PUBLIC_API else self._auth_user()
-            if path not in PUBLIC_API and not user:
+            demo_account_picker = path == "/api/auth/accounts" and um.DEMO_MODE
+            is_public = path in PUBLIC_API or demo_account_picker
+            user = None if is_public else self._auth_user()
+            if not is_public and not user:
                 return self._json({"error": "login required"}, 401)
+            if path in AUDIT_READ_PATHS:
+                decision = authorize(user, "AUDIT_READ", "FACILITY", "AIGH")
+                if not decision["allow"]:
+                    return self._json({"error": "not allowed", "reason": decision["reason"]}, 403)
             if path == "/api/auth/me":
                 resp = {"ok": True, "user": um.public_me(user), "rbac": RBAC_STATUS}
                 if um.DEMO_MODE:
@@ -482,6 +533,8 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/rbac/me":
                 return self._json(my_rbac(user))
             if path == "/api/auth/accounts":
+                if not um.DEMO_MODE and not user["can_admin_users"]:
+                    return self._json({"error": "not allowed"}, 403)
                 conn = db()
                 try:
                     acc = [

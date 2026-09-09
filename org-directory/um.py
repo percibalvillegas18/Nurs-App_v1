@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
+import sqlite3
 import threading
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,11 @@ def slug_username(name: str, code: str, used: set[str]) -> str:
     return candidate
 
 
+def session_token_hash(token: str) -> str:
+    """Hash a bearer token before persisting it in the session table."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def cookie_token(header: str | None) -> str | None:
     for part in (header or "").split(";"):
         k, _, v = part.strip().partition("=")
@@ -102,25 +108,32 @@ def user_from_conn(conn, headers) -> dict | None:
     if not token:
         return None
     now = now_iso()
+    token_digest = session_token_hash(token)
     row = conn.execute(
         """SELECT u.user_id, u.username, u.status, u.must_change, u.last_login,
                   p.persona_id, p.persona_code, p.display_name, p.job_title, p.category
            FROM app_session s
            JOIN app_user u ON u.user_id = s.user_id
            JOIN persona p ON p.persona_id = u.persona_id
-           WHERE s.token = ? AND s.expires_at >= ? AND u.status = 'ACTIVE'""",
-        (token, now),
+           WHERE (s.token = ? OR s.token = ?)
+             AND s.expires_at >= ? AND u.status = 'ACTIVE'""",
+        (token_digest, token, now),
     ).fetchone()
     if not row:
         return None
     d = dict(row)
+    # Keep the identity/session view consistent with the authorization engine:
+    # a future or expired grant must not confer user-administration powers.
+    today = datetime.now(timezone.utc).date().isoformat()
     d["roles"] = [
         r[0]
         for r in conn.execute(
             """SELECT r.role_code FROM role_grant g
                JOIN role r ON r.role_id = g.role_id
-               WHERE g.persona_id = ? AND g.status = 'ACTIVE'""",
-            (d["persona_id"],),
+               WHERE g.persona_id = ? AND g.status = 'ACTIVE'
+                 AND g.effective_from <= ?
+                 AND (g.effective_to IS NULL OR g.effective_to >= ?)""",
+            (d["persona_id"], today, today),
         ).fetchall()
     ]
     d["can_admin_users"] = any(r in ADMIN_ROLES for r in d["roles"])
@@ -199,7 +212,7 @@ def login(conn, username: str, password: str, client_ip: str = "unknown") -> dic
     expires = (datetime.now(timezone.utc) + timedelta(hours=SESSION_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         "INSERT INTO app_session (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
-        (token, row["user_id"], created, expires),
+        (session_token_hash(token), row["user_id"], created, expires),
     )
     conn.execute("UPDATE app_user SET last_login=? WHERE user_id=?", (created, row["user_id"]))
     conn.execute(
@@ -219,7 +232,10 @@ def login(conn, username: str, password: str, client_ip: str = "unknown") -> dic
 
 def logout(conn, token: str | None):
     if token:
-        conn.execute("DELETE FROM app_session WHERE token=?", (token,))
+        conn.execute(
+            "DELETE FROM app_session WHERE token IN (?, ?)",
+            (token, session_token_hash(token)),
+        )
         conn.commit()
     return {"ok": True}
 
@@ -353,8 +369,9 @@ def save_profile(conn, user: dict, persona_code: str | None, payload: dict) -> d
         if user_row2:
             if current_token:
                 conn.execute(
-                    "DELETE FROM app_session WHERE user_id=? AND token!=?",
-                    (user_row2["user_id"], current_token),
+                    """DELETE FROM app_session
+                       WHERE user_id=? AND token NOT IN (?, ?)""",
+                    (user_row2["user_id"], current_token, session_token_hash(current_token)),
                 )
             else:
                 conn.execute("DELETE FROM app_session WHERE user_id=?", (user_row2["user_id"],))
@@ -398,7 +415,11 @@ def save_document(conn, user: dict, persona_code: str | None, doc_code: str, fil
                VALUES (?,?,?,?,?,?,?, 'SUBMITTED', ?)""",
             (persona["persona_id"], doc_code, safe_original, stored, mime, len(data), now_iso(), file_hash),
         )
-    except Exception:
+    except sqlite3.OperationalError as exc:
+        # Only tolerate the pre-migration schema. Constraint, disk, or other
+        # database failures must surface instead of creating an untracked file.
+        if "sha256" not in str(exc).lower():
+            raise
         conn.execute(
             """INSERT INTO staff_document
                (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status)
@@ -432,6 +453,13 @@ def open_document(conn, user: dict, document_id: int):
         return None, "invalid path"
     if not path.exists():
         return None, "missing file"
+    # Verify integrity before returning a document for download. Legacy rows
+    # without a checksum remain readable only until they are re-uploaded or
+    # migrated; they should be flagged for remediation.
+    if d.get("sha256"):
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if not secrets.compare_digest(actual, d["sha256"]):
+            return None, "file integrity check failed"
     return d, path
 
 

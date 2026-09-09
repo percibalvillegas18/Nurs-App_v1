@@ -10,11 +10,14 @@ catalogue-changes-require-draft-policy, etc.), this migration:
   2. Inserts catalogue data (roles, permissions, role_permission, SoD rules)
      while the policy is in DRAFT state
   3. Publishes the policy to ACTIVE
-  4. Maps persona → identity_account_v2 + staff_member_v2
+  4. Maps persona → pending identity_account_v2 + staff_member_v2
   5. Maps role_grant → access_grant_request_v2 + access_grant_v2 (with triggers
      temporarily disabled for the bootstrap grant-request match check)
 
-Rollback: 008_seed_v2_rollback.sql (truncates seeded rows, preserving schema)
+Human identities remain pending/legacy-local until HR/SSO verification; this
+migration does not prove identity, activate accounts, or create email
+placeholders. Rollback: 008_seed_v2_rollback.sql (truncates seeded rows,
+preserving schema).
 """
 from __future__ import annotations
 
@@ -194,8 +197,8 @@ def run(db_path: str | Path | None = None):
 
         # Create identity account as PENDING_VERIFICATION because the v2
         # CHECK constraint requires email for ACTIVE HUMAN accounts, and
-        # legacy demo personas don't have emails.  The cutover script
-        # adds placeholder emails and promotes to ACTIVE.
+        # legacy/demo personas are not verified production identities. The
+        # approved HR/SSO migration, not this seed, must activate the account.
         conn.execute(
             """INSERT INTO identity_account_v2
                (account_uuid, legacy_app_user_id, account_type, auth_provider,

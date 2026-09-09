@@ -305,6 +305,8 @@ def main() -> None:
         conn.execute("UPDATE access_grant_v2 SET status='REVOKED',revoked_at=?,revoked_by_user_id=?,revocation_reason='ended' WHERE grant_id=?", (NOW, ids["approver"], charge_grant))
         assert engine.evaluate(account_uuid="charge", permission_code="BED_CONTROL", resource_type="UNIT", resource_code="ICU-MAIN", policy_version="RBAC-V2-DRAFT-1", request_id="eval-revoked", at=NOW)["reason_code"] == "NO_EFFECTIVE_ENTITLEMENT"
         assert engine.evaluate(account_uuid="charge", permission_code="BED_CONTROL", resource_type="UNIT", resource_code="ICU-MAIN", policy_version="RBAC-V2-DRAFT-1", request_id="eval-allow", at=NOW)["decision_id"] == allow["decision_id"]
+        reused = engine.evaluate(account_uuid="manager", permission_code="BED_CONTROL", resource_type="UNIT", resource_code="ICU-MAIN", policy_version="RBAC-V2-DRAFT-1", request_id="eval-allow", at=NOW)
+        assert not reused["allow"] and reused["decision"] == "ERROR" and reused["reason_code"] == "REQUEST_ID_REUSE"
 
         # Decision evidence and linked SoD evidence cannot be rewritten or deleted.
         expect_integrity(conn, "UPDATE authorization_decision_v2 SET decision='ALLOW' WHERE request_id='eval-conflict'")

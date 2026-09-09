@@ -6,12 +6,13 @@ Physical floor counts are NOT invented — walk_status is always NOT_WALKED.
 from __future__ import annotations
 
 import csv
+import os
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from um import DEMO_PASSWORD, DOC_TYPES, hash_password, slug_username
+from um import DEMO_MODE, DEMO_PASSWORD, DOC_TYPES, hash_password, slug_username
 
 ROOT = Path(__file__).resolve().parents[1]
 ART = ROOT / "implementation-plan" / "artifacts"
@@ -21,6 +22,32 @@ SCHEMA = HERE / "schema.sql"
 SEED_CSV = ART / "normalized_department_unit.csv"
 DB = DATA / "org_directory.db"
 EFFECTIVE = "2026-09-09"
+
+
+def initial_seed_password() -> str:
+    """Return an explicit bootstrap password or fail before creating a DB.
+
+    The old loader imported ``DEMO_PASSWORD`` unconditionally. With demo mode
+    disabled that value is ``None``, so a normal seed crashed halfway through
+    and left a misleading partial database. Production should use SSO and a
+    separate identity migration; this value exists only for a controlled local
+    bootstrap and must never be printed.
+    """
+    if DEMO_MODE:
+        # DEMO_MODE is an explicit opt-in for the isolated demo environment.
+        assert DEMO_PASSWORD
+        return DEMO_PASSWORD
+    password = os.environ.get("SEED_PASSWORD", "")
+    if not password:
+        raise SystemExit(
+            "Refusing to seed shared credentials. Set DEMO_MODE=true for the "
+            "isolated demo, or provide SEED_PASSWORD for a local bootstrap; "
+            "use SSO/MFA and real identities in production."
+        )
+    if len(password) < 8:
+        raise SystemExit("SEED_PASSWORD must be at least 8 characters")
+    return password
+
 
 DEPT_CODES = {
     "EMERGENCY & ACUTE CARE": "EMRG",
@@ -373,6 +400,9 @@ def load_units():
 
 
 def main():
+    # Validate credentials before deleting an existing database. This makes a
+    # failed bootstrap non-destructive and prevents a None password crash.
+    seed_password = initial_seed_password()
     DATA.mkdir(exist_ok=True)
     if DB.exists():
         DB.unlink()
@@ -516,7 +546,7 @@ def main():
     people_rows = list(cur.execute("SELECT persona_id, persona_code, display_name FROM persona"))
     for pid, code, name in people_rows:
         uname = slug_username(name, code, used_names)
-        salt, hashed = hash_password(DEMO_PASSWORD)
+        salt, hashed = hash_password(seed_password)
         cur.execute(
             """INSERT INTO app_user (persona_id, username, password_salt, password_hash, status)
                VALUES (?,?,?,?, 'ACTIVE')""",
@@ -528,7 +558,7 @@ def main():
     )
     cur.execute(
         "INSERT INTO registry_event (event_time, event_type, actor, detail) VALUES (?,?,?,?)",
-        (now, "RBAC_APPROVED", "org-directory", "RBAC contract APPROVED and applied 2026-09-09; engine is live"),
+        (now, "RBAC_V1_PROTOTYPE", "org-directory", "v1 RBAC prototype loaded 2026-09-09; v2 remains shadow-only pending governance approval"),
     )
     conn.commit()
 
@@ -550,7 +580,10 @@ def main():
     write_desk_audit(units, lic, ed_cap, src)
     conn.close()
     print(f"Loaded {n_units} units, licensed inpatient {lic}, ED {ed_cap}, source {src}, users {n_users} → {DB}")
-    print(f"Demo login password for every account: {DEMO_PASSWORD}")
+    if DEMO_MODE:
+        print("Demo credentials are enabled only for this explicitly opted-in environment.")
+    else:
+        print("Bootstrap credentials were supplied out-of-band; rotate them before use.")
 
 
 def write_desk_audit(units, lic, ed_cap, src):
