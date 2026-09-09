@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Wave P1 Org Directory API + static UI. Stdlib only. Bind 0.0.0.0."""
+"""Wave P1 Org Directory API + static UI. Stdlib only."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
+import traceback
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -20,8 +22,8 @@ import um  # noqa: E402
 
 DB = HERE / "data" / "org_directory.db"
 STATIC = HERE / "static"
-HOST = "0.0.0.0"
-PORT = 8080
+HOST = os.environ.get("BIND_HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8080"))
 
 RBAC_STATUS = "APPROVED"
 RBAC_APPLIED = "2026-09-09"
@@ -47,6 +49,9 @@ SCENARIOS = [
 ]
 
 
+import contextlib
+
+
 def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -54,6 +59,16 @@ def db():
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+@contextlib.contextmanager
+def db_conn():
+    """Context manager for database connections — ensures close on exit."""
+    conn = db()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def rows(sql, args=()):
@@ -286,11 +301,14 @@ def run_scenarios():
     return out
 
 
-def log_decision(conn, res: dict):
-    """Persist an RBAC decision to the audit log."""
+def log_decision(conn, res: dict, mode: str = "ENFORCED"):
+    """Persist an RBAC decision to the audit log.
+
+    mode: 'ENFORCED' for real access decisions, 'SIMULATED' for dry-run / evaluate-via-GET.
+    """
     conn.execute(
-        """INSERT INTO rbac_decision_log (decided_at, subject, permission, resource_type, resource_code, allow, reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO rbac_decision_log (decided_at, subject, permission, resource_type, resource_code, allow, reason, mode)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             res.get("subject", ""),
@@ -299,6 +317,7 @@ def log_decision(conn, res: dict):
             (res.get("resource") or {}).get("code", ""),
             1 if res.get("allow") else 0,
             res.get("reason", ""),
+            mode,
         ),
     )
 
@@ -342,7 +361,7 @@ def my_rbac(user: dict) -> dict:
         conn.close()
 
 
-def evaluate_request(payload: dict) -> dict:
+def evaluate_request(payload: dict, mode: str = "ENFORCED") -> dict:
     conn = db()
     try:
         eng = RbacEngine(conn)
@@ -352,8 +371,9 @@ def evaluate_request(payload: dict) -> dict:
             payload.get("resource_type", "UNIT"),
             payload.get("resource_code", ""),
         )
-        log_decision(conn, res)
+        log_decision(conn, res, mode=mode)
         conn.commit()
+        res["mode"] = mode
         return res
     finally:
         conn.close()
@@ -396,6 +416,17 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _auth_user_post(self):
+        """Authenticate for state-changing requests. Requires Bearer/header token (CSRF protection)."""
+        token = um.request_token(self.headers, require_header=True)
+        if not token:
+            return None
+        conn = db()
+        try:
+            return um.user_from_conn(conn, self.headers)
+        finally:
+            conn.close()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -404,7 +435,10 @@ class Handler(SimpleHTTPRequestHandler):
             if path not in PUBLIC_API and not user:
                 return self._json({"error": "login required"}, 401)
             if path == "/api/auth/me":
-                return self._json({"ok": True, "user": um.public_me(user), "demo_password": um.DEMO_PASSWORD, "rbac": RBAC_STATUS})
+                resp = {"ok": True, "user": um.public_me(user), "rbac": RBAC_STATUS}
+                if um.DEMO_MODE:
+                    resp["demo_password"] = um.DEMO_PASSWORD
+                return self._json(resp)
             if path == "/api/rbac/me":
                 return self._json(my_rbac(user))
             if path == "/api/auth/accounts":
@@ -423,7 +457,10 @@ class Handler(SimpleHTTPRequestHandler):
                                WHERE u.status='ACTIVE' ORDER BY p.category, p.display_name"""
                         )
                     ]
-                    return self._json({"accounts": acc, "demo_password": um.DEMO_PASSWORD})
+                    resp = {"accounts": acc}
+                    if um.DEMO_MODE:
+                        resp["demo_password"] = um.DEMO_PASSWORD
+                    return self._json(resp)
                 finally:
                     conn.close()
             if path == "/api/um/profile":
@@ -456,8 +493,14 @@ class Handler(SimpleHTTPRequestHandler):
                     data = Path(path_or_err).read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", rec.get("mime") or "application/octet-stream")
-                    safe_name = re.sub(r'[\r\n"\\]', '_', rec["original_name"])
-                    self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+                    from urllib.parse import quote
+                    ascii_name = re.sub(r'[^\x20-\x7E]', '_', rec["original_name"])
+                    ascii_name = re.sub(r'[\r\n"\\]', '_', ascii_name)
+                    utf8_name = quote(rec["original_name"], safe='')
+                    self.send_header(
+                        "Content-Disposition",
+                        f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}'
+                    )
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
@@ -475,9 +518,9 @@ class Handler(SimpleHTTPRequestHandler):
                 if not user["can_admin_users"]:
                     payload["subject"] = user["persona_code"]
                 try:
-                    return self._json(evaluate_request(payload))
+                    return self._json(evaluate_request(payload, mode="SIMULATED"))
                 except Exception as e:
-                    return self._json({"error": str(e)}, 500)
+                    return self._json({"error": "RBAC evaluation failed"}, 500)
             if path.startswith("/api/units/") and path != "/api/units":
                 code = unquote(path.split("/")[-1])
                 rec = one(
@@ -497,7 +540,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 return self._json(fn(parse_qs(parsed.query)))
             except Exception as e:
-                return self._json({"error": str(e)}, 500)
+                traceback.print_exc()
+                return self._json({"error": "Internal server error"}, 500)
         if path == "/":
             self.path = "/index.html"
         return super().do_GET()
@@ -525,9 +569,9 @@ class Handler(SimpleHTTPRequestHandler):
             finally:
                 conn.close()
 
-        user = self._auth_user()
+        user = self._auth_user_post()
         if not user:
-            return self._json({"error": "login required"}, 401)
+            return self._json({"error": "login required — Authorization header is required for POST requests"}, 401)
 
         if path == "/api/auth/logout":
             conn = db()
@@ -565,6 +609,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/um/profile":
             conn = db()
             try:
+                payload["_headers"] = self.headers
                 res = um.save_profile(conn, user, payload.get("persona"), payload)
                 return self._json(res, 200 if res.get("ok") else 400)
             finally:
@@ -589,11 +634,28 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _session_cleanup_loop():
+    """Background thread: clean expired sessions every 15 minutes."""
+    import time
+    while True:
+        time.sleep(900)
+        try:
+            with db_conn() as conn:
+                um.cleanup_sessions(conn)
+        except Exception:
+            pass  # best-effort
+
+
 def main():
     if not DB.exists():
         raise SystemExit("Database missing. Run: python3 seed.py")
+    import threading
+    t = threading.Thread(target=_session_cleanup_loop, daemon=True)
+    t.start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Org Directory P1 http://{HOST}:{PORT}")
+    if um.DEMO_MODE:
+        print("  DEMO_MODE=true  (shared password active)")
     httpd.serve_forever()
 
 

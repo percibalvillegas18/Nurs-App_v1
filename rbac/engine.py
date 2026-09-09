@@ -76,20 +76,25 @@ class RbacEngine:
             """,
             (subject, today, today),
         ).fetchall()
+        if not rows:
+            return []
+        # Batch-fetch permissions for all role_ids at once (eliminates N+1)
+        role_ids = list({r["role_id"] for r in rows})
+        placeholders = ",".join("?" for _ in role_ids)
+        perm_rows = self.conn.execute(
+            f"""SELECT rp.role_id, perm.perm_code
+                FROM role_permission rp
+                JOIN permission perm ON perm.permission_id = rp.permission_id
+                WHERE rp.role_id IN ({placeholders})""",
+            role_ids,
+        ).fetchall()
+        perms_by_role: dict[int, list[str]] = {}
+        for pr in perm_rows:
+            perms_by_role.setdefault(pr["role_id"], []).append(pr["perm_code"])
         out = []
         for row in rows:
             d = dict(row)
-            perms = [
-                r[0]
-                for r in self.conn.execute(
-                    """SELECT perm.perm_code
-                       FROM role_permission rp
-                       JOIN permission perm ON perm.permission_id = rp.permission_id
-                       WHERE rp.role_id = ?""",
-                    (d["role_id"],),
-                ).fetchall()
-            ]
-            d["permissions"] = perms
+            d["permissions"] = perms_by_role.get(d["role_id"], [])
             out.append(d)
         return out
 

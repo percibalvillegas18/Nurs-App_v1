@@ -11,7 +11,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 UPLOADS = HERE / "data" / "uploads"
-DEMO_PASSWORD = "Demo@2026"
+import os as _os
+DEMO_MODE = _os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes")
+DEMO_PASSWORD = "Demo@2026" if DEMO_MODE else None
 SESSION_HOURS = 12
 COOKIE = "hnwms_session"
 PBKDF2_ROUNDS = 120_000
@@ -20,6 +22,8 @@ ALLOWED_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"}
 ADMIN_ROLES = {"SYS_ADMIN", "ORG_ADMIN", "HR", "DON", "ADON", "WORKFORCE_MGR"}
 LOGIN_RATE_WINDOW = 60  # seconds
 LOGIN_RATE_MAX = 10     # max attempts per window per IP
+# NOTE: In-memory rate limiter. Single-process only.
+# For multi-process / multi-container deployment, move to Redis or reverse-proxy rate limiting.
 _login_attempts: dict[str, list[float]] = defaultdict(list)
 _login_lock = threading.Lock()
 
@@ -75,13 +79,21 @@ def cookie_token(header: str | None) -> str | None:
     return None
 
 
-def request_token(headers) -> str | None:
+def request_token(headers, require_header: bool = False) -> str | None:
+    """Extract the session token from the request headers.
+
+    If require_header is True (used for POST/state-changing requests),
+    only the Authorization or X-Session-Token headers are accepted —
+    cookie-only auth is rejected to prevent CSRF.
+    """
     auth = (headers.get("Authorization") if hasattr(headers, "get") else None) or ""
     if auth.lower().startswith("bearer "):
         return auth.split(" ", 1)[1].strip()
     extra = headers.get("X-Session-Token") if hasattr(headers, "get") else None
     if extra:
         return extra.strip()
+    if require_header:
+        return None  # CSRF protection: reject cookie-only auth for POST
     return cookie_token(headers.get("Cookie") if hasattr(headers, "get") else None)
 
 
@@ -180,9 +192,8 @@ def login(conn, username: str, password: str, client_ip: str = "unknown") -> dic
         (key, key, key, key),
     ).fetchone()
     if not row or row["status"] != "ACTIVE" or not verify_password(password, row["password_salt"], row["password_hash"]):
-        return {
-            "error": "Invalid username or password. Pick a person from the list. Demo password is Demo@2026. Username looks like fatimah.al.harbi"
-        }
+        hint = " Pick a person from the list. Username looks like fatimah.al.harbi" if DEMO_MODE else ""
+        return {"error": f"Invalid username or password.{hint}"}
     token = secrets.token_urlsafe(32)
     created = now_iso()
     expires = (datetime.now(timezone.utc) + timedelta(hours=SESSION_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -311,14 +322,42 @@ def save_profile(conn, user: dict, persona_code: str | None, payload: dict) -> d
         (persona["persona_id"], *[vals[k] for k in PROFILE_FIELDS], now_iso()),
     )
     new_pw = (payload.get("new_password") or "").strip()
+    current_token = request_token(payload.get("_headers") or {})
     if new_pw:
         if len(new_pw) < 8:
             return {"error": "Password must be at least 8 characters"}
+        if not re.search(r'[A-Z]', new_pw):
+            return {"error": "Password must contain at least one uppercase letter"}
+        if not re.search(r'[a-z]', new_pw):
+            return {"error": "Password must contain at least one lowercase letter"}
+        if not re.search(r'[0-9]', new_pw):
+            return {"error": "Password must contain at least one digit"}
+        if not re.search(r'[^A-Za-z0-9]', new_pw):
+            return {"error": "Password must contain at least one special character"}
+        # Verify new password differs from current
+        user_row = conn.execute(
+            "SELECT password_salt, password_hash FROM app_user WHERE persona_id=?",
+            (persona["persona_id"],),
+        ).fetchone()
+        if user_row and verify_password(new_pw, user_row["password_salt"], user_row["password_hash"]):
+            return {"error": "New password must differ from the current password"}
         salt, hashed = hash_password(new_pw)
         conn.execute(
             "UPDATE app_user SET password_salt=?, password_hash=?, must_change=0 WHERE persona_id=?",
             (salt, hashed, persona["persona_id"]),
         )
+        # Invalidate all sessions except the current one
+        user_row2 = conn.execute(
+            "SELECT user_id FROM app_user WHERE persona_id=?", (persona["persona_id"],)
+        ).fetchone()
+        if user_row2:
+            if current_token:
+                conn.execute(
+                    "DELETE FROM app_session WHERE user_id=? AND token!=?",
+                    (user_row2["user_id"], current_token),
+                )
+            else:
+                conn.execute("DELETE FROM app_session WHERE user_id=?", (user_row2["user_id"],))
     conn.execute(
         "INSERT INTO registry_event (event_time, event_type, actor, detail) VALUES (?,?,?,?)",
         (now_iso(), "PROFILE_SAVE", user["persona_code"], persona["persona_code"]),
@@ -344,16 +383,28 @@ def save_document(conn, user: dict, persona_code: str | None, doc_code: str, fil
     ext = Path(filename or "").suffix.lower()
     if ext not in ALLOWED_EXT:
         return {"error": "Allowed types: PDF, JPG, PNG, WEBP, DOC, DOCX"}
+    # Allow-list original_name to printable ASCII/Unicode only (no control chars, null bytes)
+    safe_original = re.sub(r'[^\x20-\x7E -￿]', '_', Path(filename).name[:180])
     stored = f"{secrets.token_hex(8)}{ext}"
     dest_dir = UPLOADS / str(persona["persona_id"])
     dest_dir.mkdir(parents=True, exist_ok=True)
+    file_hash = hashlib.sha256(data).hexdigest()
     (dest_dir / stored).write_bytes(data)
-    conn.execute(
-        """INSERT INTO staff_document
-           (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status)
-           VALUES (?,?,?,?,?,?,?, 'SUBMITTED')""",
-        (persona["persona_id"], doc_code, Path(filename).name[:180], stored, mime, len(data), now_iso()),
-    )
+    # Try to insert with sha256 column (post-migration), fall back without
+    try:
+        conn.execute(
+            """INSERT INTO staff_document
+               (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status, sha256)
+               VALUES (?,?,?,?,?,?,?, 'SUBMITTED', ?)""",
+            (persona["persona_id"], doc_code, safe_original, stored, mime, len(data), now_iso(), file_hash),
+        )
+    except Exception:
+        conn.execute(
+            """INSERT INTO staff_document
+               (persona_id, doc_code, original_name, stored_name, mime, size_bytes, uploaded_at, status)
+               VALUES (?,?,?,?,?,?,?, 'SUBMITTED')""",
+            (persona["persona_id"], doc_code, safe_original, stored, mime, len(data), now_iso()),
+        )
     conn.execute(
         "INSERT INTO registry_event (event_time, event_type, actor, detail) VALUES (?,?,?,?)",
         (now_iso(), "DOC_UPLOAD", user["persona_code"], f"{persona['persona_code']} {doc_code}"),
@@ -373,6 +424,9 @@ def open_document(conn, user: dict, document_id: int):
     d = dict(row)
     if not _can_see(user, d["persona_id"]):
         return None, "not allowed"
+    # Defence-in-depth: validate stored_name format before building path
+    if not re.fullmatch(r'[a-f0-9]{16}\.\w+', d["stored_name"]):
+        return None, "invalid stored filename"
     path = (UPLOADS / str(d["persona_id"]) / d["stored_name"]).resolve()
     if not path.is_relative_to(UPLOADS.resolve()):
         return None, "invalid path"
