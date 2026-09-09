@@ -58,7 +58,7 @@ Full ERD in `02_erd_data_model.md`. Summary here. Three domains:
 - **room** — grouping level inside a unit. `room_id PK`, unit FK, room_number, room_type (private/shared/bay), isolation capability.
 - **bed** — physical assignable resource. `bed_id PK`, unit FK, room FK, bed_number, bed_class, care_features (telemetry/vent/neg-pressure), `is_licensed`, `is_operative`, lifecycle `bed_status`.
 
-**Bed granularity decision (senior note).** The CSV reports **unit-level capacity counts only** (total 524). There is **no room/bed-number detail**. Therefore the physical `bed`/`room` rows are **auto-provisioned from `licensed_capacity`** using configurable room-bay sizing, and the resulting room/bed numbering is a **stated assumption** that MUST be reconciled in Wave P0/P2 with a physical count (see §7 Reconciliation). Two supported loading modes:
+**Bed granularity decision (senior note).** The CSV reports **unit-level capacity counts only** (source total 524; **operational assignable = 515** after DQ-9 — see `06`). There is **no room/bed-number detail**. Therefore the physical `bed`/`room` rows are **auto-provisioned from `licensed_capacity`** (i.e., the 36 bedded units = 515 beds) using configurable room-bay sizing, and the resulting room/bed numbering is a **stated assumption** that MUST be reconciled in Wave P0/P2 with a physical count (see §7 Reconciliation). Two supported loading modes:
 - **Capacity mode:** store `licensed_capacity` on the unit only (best if bed-management is unit/ward-occupancy based).
 - **Bed-registry mode (recommended for ADT room/bed):** generate one `bed` row per capacity unit, grouped into `room` records, enabling individual bed assignment and state. Provide `room_size` default and per-unit override.
 

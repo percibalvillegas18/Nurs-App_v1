@@ -52,7 +52,7 @@ The Hospital Nursing Workforce Management System (HNWMS) manages the complete nu
 - **Modular Independence:** Each of the 13 modules encapsulates a distinct domain with defined inputs/outputs
 - **Cross-Cutting Analytics:** Module 9 (Control Tower) aggregates data from every module for hospital-wide visibility
 - **Regulatory Alignment:** SCFHS credential verification, CBAHI/JCI accreditation KPIs, Saudi Labor Law compliance
-- **Automated Compliance Guardrails:** Saudi Labor Law (HRSD), CBAHI, and Hospital Policy requirements are enforced by an automated guardrail layer (ALLOW / WARN / BLOCK) rather than manual HR/Nursing checking — see **Appendix B**
+- **Automated Compliance Guardrails:** Saudi Labor Law (HRSD), CBAHI, and Hospital Policy requirements are enforced by an automated guardrail layer (ALLOW / WARN / BLOCK) rather than manual HR/Nursing checking — see **Appendix A**
 - **Integration-Ready:** Defined interface points for HR/ERP, biometrics, payroll, SCFHS portal, EMR/HIS
 
 ### Lifecycle Flow
@@ -266,7 +266,7 @@ The system preserves both assignments with their effective dates.
 8. Integration systems must use controlled Staff ID mapping
 9. Duplicate staff records must be detected and resolved through controlled data governance
 10. Staff Master data must distinguish master data from transactional data
-11. No nurse may be deployed, scheduled, or approved for overtime/leave unless the Compliance Guardrail Layer (Appendix B) evaluates the transaction as compliant (license, credential, competency, working hours/rest, staffing, and coverage checks)
+11. No nurse may be deployed, scheduled, or approved for overtime/leave unless the Compliance Guardrail Layer (Appendix A) evaluates the transaction as compliant (license, credential, competency, working hours/rest, staffing, and coverage checks)
 
 ---
 
@@ -515,7 +515,7 @@ Before assignment, verify: employment status, position, professional license, re
 
 **Example:** ICU assignment → ICU competency + valid license + critical-care credentials + completed ICU orientation.
 
-> **Automated enforcement:** These eligibility checks are applied by the **Compliance Guardrail Layer** (Appendix B) before any deployment/assignment/redeployment is published. A deployment is BLOCKED if employment/license/credential/competency/unit-authorization is invalid (CBA-LIC-001, CBA-CRED-001, CBA-COMP-001, HOS-POL-004) or if the move is an unauthorized transfer (LAB-CT-009) or creates an unsafe assignment (CBA-SAFE-001).
+> **Automated enforcement:** These eligibility checks are applied by the **Compliance Guardrail Layer** (Appendix A) before any deployment/assignment/redeployment is published. A deployment is BLOCKED if employment/license/credential/competency/unit-authorization is invalid (CBA-LIC-001, CBA-CRED-001, CBA-COMP-001, HOS-POL-004) or if the move is an unauthorized transfer (LAB-CT-009) or creates an unsafe assignment (CBA-SAFE-001).
 
 #### 4.3 Department Assignment
 
@@ -628,7 +628,7 @@ Roster Created → Head Nurse Review → Staffing Coverage Check
 → Roster Published → Staff Notification
 ```
 
-> **Automated guardrail (critical):** Before a roster/shift is published, the **Compliance Guardrail Layer** (Appendix B) evaluates every shift candidate. It BLOCKS/WARNS on working-hours and rest violations (LAB-WH-*, LAB-RS-*), license/credential/competency/training invalidity (CBA-LIC/CRED/COMP, CBA-TRAIN-001), and **BLOCKs when the roster falls below minimum staffing or required skill-mix** (CBA-STAFF-001/002, CBA-SKILL-001) — even if every scheduled nurse is individually eligible. A schedule is never auto-approved on individual legal eligibility alone.
+> **Automated guardrail (critical):** Before a roster/shift is published, the **Compliance Guardrail Layer** (Appendix A) evaluates every shift candidate. It BLOCKS/WARNS on working-hours and rest violations (LAB-WH-*, LAB-RS-*), license/credential/competency/training invalidity (CBA-LIC/CRED/COMP, CBA-TRAIN-001), and **BLOCKs when the roster falls below minimum staffing or required skill-mix** (CBA-STAFF-001/002, CBA-SKILL-001) — even if every scheduled nurse is individually eligible. A schedule is never auto-approved on individual legal eligibility alone.
 
 #### Module 5 — Inputs & Outputs
 
@@ -673,7 +673,7 @@ Actual Hours Worked → Scheduled Hours → Excess Hours?
 
 Captures: normal scheduled hours, actual hours worked, approved overtime, unapproved overtime, overtime reason, overtime date, overtime hours, approving manager, payroll status.
 
-> **Automated guardrail:** Overtime detection, eligibility (contracted hours first), approval chain (Department → Nursing Director), hour caps, and rate (hourly wage + 50% base) are enforced by the **Compliance Guardrail Layer** (LAB-OT-*). Only approved, compliant overtime is passed to payroll (LAB-OT-007). See Appendix B.
+> **Automated guardrail:** Overtime detection, eligibility (contracted hours first), approval chain (Department → Nursing Director), hour caps, and rate (hourly wage + 50% base) are enforced by the **Compliance Guardrail Layer** (LAB-OT-*). Only approved, compliant overtime is passed to payroll (LAB-OT-007). See Appendix A.
 
 #### 6.5 Missed Punch Management
 
@@ -725,7 +725,7 @@ Leave Request → Check Leave Balance → Check Eligibility
 → Check Roster Conflict → Check Staffing Coverage → Submit for Approval
 ```
 
-> **Automated guardrail:** Leave approval is **not based on balance alone**. The **Compliance Guardrail Layer** (Appendix B) validates entitlement/balance/carry-forward (LAB-LV-001..005) **and** checks whether approving the leave would create unsafe staffing coverage (LAB-LV-006) before ALLOW / WARN / BLOCK. Maternity/extended leave triggers replacement planning (LAB-LV-007).
+> **Automated guardrail:** Leave approval is **not based on balance alone**. The **Compliance Guardrail Layer** (Appendix A) validates entitlement/balance/carry-forward (LAB-LV-001..005) **and** checks whether approving the leave would create unsafe staffing coverage (LAB-LV-006) before ALLOW / WARN / BLOCK. Maternity/extended leave triggers replacement planning (LAB-LV-007).
 
 #### 7.3 Leave Balance Calculation
 
@@ -834,7 +834,7 @@ Position Requirements → Required Competency Profile
     NO  → Competent / Valid
 ```
 
-> **Automated guardrail:** Competency results (M8) and training completion (M11/LMS) feed the **Compliance Guardrail Layer** (Appendix B). Expired/absent competency or mandatory training BLOCKs scheduling/deployment for the affected skills (CBA-COMP-001, CBA-TRAIN-001/002, CBA-MED-001, CBA-IP-001, CBA-EM-001); clinical incidents trigger automated escalation (CBA-INCID-001).
+> **Automated guardrail:** Competency results (M8) and training completion (M11/LMS) feed the **Compliance Guardrail Layer** (Appendix A). Expired/absent competency or mandatory training BLOCKs scheduling/deployment for the affected skills (CBA-COMP-001, CBA-TRAIN-001/002, CBA-MED-001, CBA-IP-001, CBA-EM-001); clinical incidents trigger automated escalation (CBA-INCID-001).
 
 #### 8.5 Training Needs Identification
 
@@ -909,7 +909,7 @@ Contract Monitoring → Contract Expiry Alert → Renewal Assessment
 | ≤30 | Urgent |
 | Expired | Critical |
 
-> **Automated guardrail:** The **Compliance Guardrail Layer** (Appendix B) enforces contract/probation/renewal monitoring (LAB-CT-001..003), position/title/salary mismatch guards (LAB-CT-004..006), employment-status validation (LAB-CT-007), wage-category-transfer requiring written agreement (LAB-CT-008), and unauthorized-transfer blocking (LAB-CT-009).
+> **Automated guardrail:** The **Compliance Guardrail Layer** (Appendix A) enforces contract/probation/renewal monitoring (LAB-CT-001..003), position/title/salary mismatch guards (LAB-CT-004..006), employment-status validation (LAB-CT-007), wage-category-transfer requiring written agreement (LAB-CT-008), and unauthorized-transfer blocking (LAB-CT-009).
 
 #### Module 10 — Inputs & Outputs
 
@@ -1003,7 +1003,7 @@ Contract Monitoring → Contract Expiry Alert → Renewal Assessment
 - Regulatory compliance reports (CBAHI, MOH, Nitaqat)
 - Ad-hoc reporting and data export
 
-> **Automated guardrail:** Module 9 also consumes the **Compliance Guardrail Layer** (Appendix B) — employee & shift compliance status, labor-law/CBAHI compliance KPIs, blocked-transaction and exception registers — to report the Nursing Director compliance targets (valid licenses 100%, expired credentials 0, mandatory-training ≥ 95%, unsafe-staffing events 0, CBAHI workforce compliance ≥ 95%, etc.).
+> **Automated guardrail:** Module 9 also consumes the **Compliance Guardrail Layer** (Appendix A) — employee & shift compliance status, labor-law/CBAHI compliance KPIs, blocked-transaction and exception registers — to report the Nursing Director compliance targets (valid licenses 100%, expired credentials 0, mandatory-training ≥ 95%, unsafe-staffing events 0, CBAHI workforce compliance ≥ 95%, etc.).
 
 #### Staffing Levels Example
 
@@ -1177,7 +1177,7 @@ Resignation / Termination → Notice Period → Handover → Replacement Require
 | **M12** | | | | | | | | | X | | | | X |
 | **M13** | X | | | | | | | | | | | | |
 
-> The grid above captures the numeric modules M1–M13. The **Compliance Guardrail Layer (CG)** (Appendix B) is a **horizontal control layer** (like Module 9) that evaluates rather than owns data — see **10.4** below rather than a row in this numeric matrix.
+> The grid above captures the numeric modules M1–M13. The **Compliance Guardrail Layer (CG)** (Appendix A) is a **horizontal control layer** (like Module 9) that evaluates rather than owns data — see **10.4** below rather than a row in this numeric matrix.
 
 ### 10.4 Automated Compliance Guardrail Layer (cross-cutting)
 
@@ -1218,7 +1218,7 @@ Operates as a horizontal **evaluator/controller** spanning all phases. It reads 
 | Contract/position/pay change | Staff Master / M10 | mismatch & wage-category-transfer rules |
 | License/credential/competency change | M3/M8 | re-evaluate affected schedules; alert/auto-replace |
 
-Guardrail decisions, exceptions (reason/risk/mitigation/time-limited/multi-approval), and parameter changes are fully audited and feed Module 9. Full catalogue & DDL in `compliance-guardrails/` (see Appendix B).
+Guardrail decisions, exceptions (reason/risk/mitigation/time-limited/multi-approval), and parameter changes are fully audited and feed Module 9. Full catalogue & DDL in `compliance-guardrails/` (see Appendix A).
 
 ---
 
@@ -1256,7 +1256,7 @@ Guardrail decisions, exceptions (reason/risk/mitigation/time-limited/multi-appro
 | Control Tower | Cross-cutting analytics layer (Module 9) monitoring all lifecycle phases |
 | Float Pool | Nurses not permanently assigned to a department, deployed as needed |
 | Staff ID | Primary unique identifier for each nurse, consistent across all modules |
-| Compliance Guardrail Layer | Cross-cutting automated control layer enforcing Saudi Labor Law (HRSD), CBAHI, and Hospital Policy — see Appendix B |
+| Compliance Guardrail Layer | Cross-cutting automated control layer enforcing Saudi Labor Law (HRSD), CBAHI, and Hospital Policy — see Appendix A |
 | Guardrail | A rule evaluated before a transaction (schedule/OT/leave/deployment/contract) that ALLOWs, INFORMs, WARNS, or BLOCKs it |
 | HRSD | Human Resources and Social Development (Saudi Arabia) — labor-law authority referenced for working-hours/OT/leave rules |
 | ALLOW / INFORM / WARN / BLOCK | Guardrail decision outcomes: proceed; proceed with notice; proceed only with approval/escalation; prevent the transaction |
@@ -1268,7 +1268,7 @@ Guardrail decisions, exceptions (reason/risk/mitigation/time-limited/multi-appro
 # Appendix A — Automated Compliance Guardrail Layer (Saudi Labor Law & CBAHI)
 
 > **Full design reference:** This appendix is a concise, authoritative summary. The complete implementation-ready design lives in the **`compliance-guardrails/`** folder of this repository:
-> `01_architecture_integration.md` · `02_rules_data_model.md` · `03_compliance_rule_catalog.md` · `04_guardrail_controls_by_module.md` · `05_severity_exceptions_approvals.md` · `06_dashboards_kpis_reports.md` · `07_test_acceptance_criteria.md` · `artifacts/ddl_compliance_engine.sql` · `artifacts/compliance_rule_catalog.csv`.
+> `01_architecture_integration.md` · `02_rules_data_model.md` · `03_compliance_rule_catalog.md` · `04_guardrail_controls_by_module.md` · `05_severity_exceptions_approvals.md` · `06_dashboards_kpis_reports.md` · `07_test_acceptance_criteria.md` · `08_api_wire_examples.md` · `09_vendor_contract_sheet.md` · `artifacts/ddl_compliance_engine.sql` · `artifacts/compliance_rule_catalog.csv`.
 
 ## A.1 Purpose
 Prevent or flag transactions that could create labor-law, credentialing, staffing, or patient-safety risk — rather than relying on HR or Nursing Management to check compliance manually. Saudi Labor Law (HRSD) provides the **legal baseline**; CBAHI provides **healthcare quality & patient-safety** standards; both are operationalized as real-time rules.
@@ -1284,8 +1284,10 @@ Representative baselines (must be confirmed against current law/policy): 8 h/day
 ## A.4 Severity model & status
 🟢 COMPLIANT (ALLOW) · 🔵 ADVISORY (INFORM) · 🟠 WARNING (approval/escalation) · 🔴 BLOCKED (prevent). Every employee and every shift carries an automated status (overall blocked/not-compliant shown per domain). Verdict = strictest applicable rule.
 
-## A.5 Exception management (no silent override)
+## A.5 Exception & degraded-mode management (no silent override)
 Exceptions require reason + risk assessment + mitigation, are **time-limited**, go through a severity-based **multi-level approval**, and are fully audited and surfaced on the compliance dashboard. Higher severity ⇒ fewer/higher approvers; license/credential/competency blocks are resolve-first (fix the record) rather than override-by-default.
+
+**Degraded mode (engine/feed down):** the system defaults to **fail-closed** — it declares degraded mode, blocks newly attempted approvals, holds them in a pending queue for re-evaluation on recovery, and alerts operators; it never silently allows a non-compliant action. Where a unit cannot be safely staffed while waiting, a **time-limited DON (or on-call director) emergency override** may be issued — bounded, attributable, fully audited, and shown on the exception register (policy in `05_severity_exceptions_approvals.md` §6).
 
 ## A.6 Key acceptance points
 - Control point is **Staff Master + Engine before any schedule/OT/leave/deployment**.

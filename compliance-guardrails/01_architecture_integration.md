@@ -4,7 +4,7 @@
 **Version:** 1.0 · **Date:** 2026-09-09
 **Scope:** Operationalize Saudi Labor Law (HRSD/MOL) + CBAHI + Hospital Policy as an **automated guardrail/decision layer** inside the HNWMS — replacing manual, document-based checking.
 
-> Companion files in this folder: `02_rules_data_model.md`, `03_compliance_rule_catalog.md`, `04_guardrail_controls_by_module.md`, `05_severity_exceptions_approvals.md`, `06_dashboards_kpis_reports.md`, `07_test_acceptance_criteria.md`, `README.md`, and `artifacts/ddl_compliance_engine.sql` + `artifacts/compliance_rule_catalog.csv`.
+> Companion files in this folder: `02_rules_data_model.md`, `03_compliance_rule_catalog.md`, `04_guardrail_controls_by_module.md`, `05_severity_exceptions_approvals.md`, `06_dashboards_kpis_reports.md`, `07_test_acceptance_criteria.md`, `08_api_wire_examples.md`, `09_vendor_contract_sheet.md`, `README.md`, and `artifacts/ddl_compliance_engine.sql` + `artifacts/compliance_rule_catalog.csv`.
 > This doc is written against the existing `HNWMS_Complete_Package.md` (Staff Nurse Master Data SSOT; modules M1–M13).
 
 ---
