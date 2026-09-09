@@ -1,0 +1,12 @@
+rule_code,conflict_a,conflict_b,scope_overlap_required,current_state,target_enforcement,exception_mode,accountable_owner,status
+SOD-BED-SCHED-001,BED_CONTROL,SCHED_PUBLISH,YES,"Implemented as BED_CONTROL + SCHED_WRITE with SYS_ADMIN waiver","Block grant activation and action when effective scopes overlap; evaluate all conflicts","EVENT_SCOPED_BREAK_GLASS_ONLY",DON and IT Security,"PENDING CHANGE — BLOCKING"
+SOD-ROSTER-APPROVE-001,SCHED_PREPARE,SCHED_APPROVE,YES,Not decomposed,"Requester/preparer cannot be final approver where dual control applies",NONE_OR_APPROVED_EMERGENCY_WORKFLOW,Workforce Manager and DON,PENDING
+SOD-CRED-VERIFY-001,CREDENTIAL_SUBMIT,CREDENTIAL_VERIFY,NO,Not implemented,"User cannot verify own credential or evidence",NONE,HR Credentialing,PENDING
+SOD-GRANT-APPROVE-001,GRANT_REQUEST,GRANT_APPROVE,NO,Not implemented,"Requester cannot solely approve own privileged grant",NONE,IT Security,PENDING
+SOD-GRANT-IMPLEMENT-001,GRANT_APPROVE,GRANT_ACTIVATE,NO,Not implemented,"High-risk grant approval and implementation require separate identities",APPROVED_EMERGENCY_CHANGE_ONLY,IT Security and Internal Audit,PENDING
+SOD-EXCEPTION-001,EXCEPTION_REQUEST,EXCEPTION_APPROVE,YES,Documented in compliance policy,"Requester cannot approve own compliance exception",NONE,DON and Quality,PENDING
+SOD-DELEGATION-001,DELEGATION_REQUEST,DELEGATION_APPROVE,YES,Not implemented,"Delegator/delegate cannot solely approve high-risk delegation",NONE,DON and IT Security,PENDING
+SOD-BREAKGLASS-REVIEW-001,BREAK_GLASS_ACTIVATE,BREAK_GLASS_REVIEW,NO,Not implemented,"Activator cannot close own post-event review",NONE,Risk and Internal Audit,PENDING
+SOD-AUDIT-INDEPENDENCE-001,OPERATIONAL_WRITE,AUDIT_ADMIN,NO,Partially documented,"Operational actor cannot modify or delete related decision evidence",NONE,Internal Audit and IT Security,PENDING
+SOD-LICENSE-EXCEPTION-001,CREDENTIAL_VERIFY,LICENSE_EXCEPTION_APPROVE,NO,Not implemented,"Credential verifier cannot be sole approver of exceptional license deployment",NONE,HR Credentialing and DON,PENDING
+
