@@ -328,9 +328,9 @@ Source unit census decrements, target unit census increments — matching the AD
 | `400` | Malformed payload / unknown staff or unit code | validation message |
 | `401` / `403` | Unauthenticated / out-of-scope caller | RBAC scope denied |
 | `409` | Idempotency conflict (duplicate evaluation) | reuse existing `evaluation_id` |
-| `503` | Engine/feeds temporarily unavailable | fail-closed configurable: default BLOCK to avoid unsafe bypass |
+| `503` | Engine/feeds temporarily unavailable | **fail-closed** (degraded mode declared; default BLOCK) — see below and `05` §6 |
 
-**Fail-safe:** if the engine or its data feeds are unavailable, default behavior is **fail-closed (block scheduling/OT/leave approval)** with an operator alert — never silently allow a non-compliant action.
+**Fail-safe (degraded mode):** if the engine or a required data feed is unavailable, the system **declares degraded mode, blocks newly attempted schedule/OT/leave/deployment approvals, and alerts operators** — it never silently allows a non-compliant action. Actions are held in a **pending queue** for re-evaluation on recovery. If a unit cannot be safely staffed while waiting, a **time-limited DON (or on-call director) emergency override** may be issued — bounded, attributable, fully audited, and surfaced on the exception register (full policy in `05` §6). Fail-closed default is configurable but **ON by default**.
 
 ---
 

@@ -1,11 +1,25 @@
 # Hospital Nursing Workforce Management System (HNWMS)
 
-## Complete System Package — Version 1.0
+## Complete System Package — Version 1.1
 
 **Organization:** AIGH — Hospital Nursing Department  
 **Date:** September 2026  
-**Architecture:** 5-Phase Lifecycle + Cross-Cutting Analytics Control Tower  
+**Architecture:** 5-Phase Lifecycle + Cross-Cutting Analytics Control Tower + Automated Compliance Guardrail Layer  
 **Foundation:** Staff Nurse Master Data — Single Source of Truth (SSOT)
+
+> **Version 1.1.** Adds the automated Saudi Labor Law & CBAHI Compliance Guardrail Layer (Appendix A), updates module references at its enforcement points, and clarifies nursing-unit / bed-capacity taxonomy. See **Changelog** below.
+
+---
+
+## Changelog
+
+| Version | Date | Summary |
+|---|---|---|
+| 1.0 | September 2026 | Baseline 13-module HNWMS complete system package. |
+| 1.1 | September 2026 | Added **Appendix A — Automated Compliance Guardrail Layer (Saudi Labor Law & CBAHI)**: new Design Principle & Key Business Rule #11; enforcement callouts at M4 (deployment), M5 (roster), M6 (overtime), M7 (leave), M8 (competency/training), M9 (analytics), M10 (contract); new §10.4 compliance-guardrail integration architecture; glossary additions (HRSD, Guardrail, ALLOW/INFORM/WARN/BLOCK, Compliance Guardrail Layer). Companion design set in `compliance-guardrails/`. |
+
+---
+
 
 ---
 
@@ -1281,4 +1295,4 @@ Exceptions require reason + risk assessment + mitigation, are **time-limited**, 
 
 ---
 
-*End of Document — HNWMS Complete System Package v1.0*
+*End of Document — HNWMS Complete System Package v1.1*

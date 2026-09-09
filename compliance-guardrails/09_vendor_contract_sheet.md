@@ -11,7 +11,7 @@
 - **Time:** ISO-8601 local facility timezone; send +offset
 
 ## 2. What the engine does
-Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, overtime, leave, deployment) against Saudi Labor Law (HRSD) + CBAHI + Hospital Policy. Verdict = **strictest** applicable rule. **Fail-closed:** if the engine/feeds are unavailable, affected actions are blocked (never silently allowed).
+Automated **ALLOW / INFORM / WARN / BLOCK** of workforce actions (schedule, overtime, leave, deployment) against Saudi Labor Law (HRSD) + CBAHI + Hospital Policy. Verdict = **strictest** applicable rule. **Fail-closed default:** if the engine/feeds are unavailable, the system declares **degraded mode**, blocks newly attempted approvals, holds them in a pending queue, and alerts operators — never silently allows a non-compliant action. Time-limited **DON emergency override** available where a unit cannot be safely staffed (bounded, audited; policy in `05` §6).
 
 ## 3. REST contract (key endpoints)
 | Method/Path | Payload/notes |

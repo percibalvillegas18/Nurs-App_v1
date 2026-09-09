@@ -58,3 +58,17 @@ Approval level is driven by rule `severity_default` + category; escalate up the 
 - Auto-escalation up the ladder by step (Charge → Unit Manager → Deputy DON → DON) when an approval exceeds its SLA.
 - WARN events not actioned within the configured SLA auto-escalate.
 - Every escalation/decision is logged with actor, role, timestamp, decision, and reason.
+
+## 6. Degraded-mode & emergency-override policy (engine / feed unavailability)
+
+**Default = fail-closed.** If the Compliance Engine or its data feeds (Staff Master, M3 license, M8 competency, LMS, EMR census) are unavailable, newly attempted schedule/OT/leave/deployment approvals are **blocked** and flagged — the system never silently allows a non-compliant action. This protects against approving transactions that cannot be checked.
+
+**But fail-closed is not an unbounded block.** In a genuine emergency the hospital must still be able to staff a unit. The escalation path already exists for BLOCKs, and it must extend to *engine-down* states:
+
+1. **Degraded-mode is declared automatically** the moment the engine or a required feed fails health checks, and is **surfaced** on the compliance dashboard + operator alert. Reverts automatically when health is restored.
+2. **Action queue:** legitimate approvals attempted during degraded mode are held in a **pending queue** (not dropped), so they can be released for re-evaluation when the engine returns.
+3. **Emergency override (time-limited):** if a unit cannot be safely staffed while waiting, the **DON (or designated on-call director)** may issue a **time-limited override** — recorded with reason, affected rule/unit/action, start & end time, and post-event re-evaluation. Override duration is bounded by hospital policy (e.g., a shift or ≤ N hours); it **cannot** exceed the declared window or be issued by the requesting/unit role (separation of duties).
+4. **Risk register:** every override is logged to `compliance_audit_log` and appears on the exception register & DON dashboard, feeding the CBAHI workforce-compliance report.
+5. **No silent bypass:** overriding is always visible, attributable, and finite — identical to the guardrail-exception controls in §3, just applied to an availability/health failure rather than a rule violation.
+
+> **Policy parameters to set before go-live:** fail-closed default (recommended ON), degraded-mode auto-declaration thresholds, emergency-override max duration, and who may approve an override (recommend DON or on-call director only).
