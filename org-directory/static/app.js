@@ -24,19 +24,14 @@ function setToken(t) {
     }
   } catch (_) {}
 }
-function withToken(path) {
-  const t = getToken();
-  if (!t) return path;
-  return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t);
-}
 const authHeaders = () => {
   const t = getToken();
-  return t ? { Authorization: "Bearer " + t, "X-Session-Token": t } : {};
+  return t ? { Authorization: "Bearer " + t } : {};
 };
 
 const api = (path, opts = {}) => {
   const headers = { ...(opts.headers || {}), ...authHeaders() };
-  return fetch(withToken(path), { credentials: "include", ...opts, headers }).then(async (r) => {
+  return fetch(path, { credentials: "include", ...opts, headers }).then(async (r) => {
     if (r.status === 401 && path.indexOf("/api/auth/login") === -1) {
       currentUser = null;
       setToken("");
@@ -258,7 +253,7 @@ const views = {
           return `<div class="doc-row">
             <div><strong>${esc(t.label)}</strong> ${chip(t.category, t.category === "MANDATORY" ? "warn" : t.category === "REQUIRED" ? "gold" : "")}
               <div class="muted">${esc(t.notes)}</div>
-              ${d ? `<div>${chip("Attached", "ok")} <a href="${withToken("/api/um/documents/" + d.document_id)}">${esc(d.original_name)}</a></div>` : chip("Missing", "warn")}
+              ${d ? `<div>${chip("Attached", "ok")} <a href="/api/um/documents/${d.document_id}">${esc(d.original_name)}</a></div>` : chip("Missing", "warn")}
             </div>
             <div><input type="file" data-doc="${esc(t.doc_code)}" /></div>
           </div>`;
@@ -284,7 +279,7 @@ const views = {
         fd.append("file", inp.files[0]);
         $("#up-msg").textContent = "Uploading…";
         try {
-          const r = await fetch(withToken("/api/um/documents"), { method: "POST", body: fd, credentials: "include", headers: authHeaders() });
+          const r = await fetch("/api/um/documents", { method: "POST", body: fd, credentials: "include", headers: authHeaders() });
           const res = await r.json();
           if (!r.ok) throw new Error(res.error || "upload failed");
           $("#up-msg").textContent = "Uploaded.";

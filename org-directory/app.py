@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -49,7 +50,9 @@ SCENARIOS = [
 def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -100,6 +103,27 @@ def summary():
     }
 
 
+def _roles_with_perms():
+    """Fetch all roles with their permissions in two queries (no N+1)."""
+    conn = db()
+    try:
+        role_list = [dict(r) for r in conn.execute("SELECT * FROM role ORDER BY role_id")]
+        perm_rows = conn.execute(
+            """SELECT rp.role_id, perm.perm_code
+               FROM role_permission rp
+               JOIN permission perm ON perm.permission_id = rp.permission_id
+               ORDER BY perm.perm_code"""
+        ).fetchall()
+        by_role = {}
+        for rp in perm_rows:
+            by_role.setdefault(rp["role_id"], []).append(rp["perm_code"])
+        for r in role_list:
+            r["permissions"] = by_role.get(r["role_id"], [])
+        return role_list
+    finally:
+        conn.close()
+
+
 ROUTES = {
     "/api/health": lambda q: {"ok": True, "service": "org-directory", "wave": "P1", "rbac": RBAC_STATUS},
     "/api/summary": lambda q: summary(),
@@ -137,21 +161,7 @@ ROUTES = {
            LEFT JOIN department d ON d.department_id=u.department_id
            ORDER BY c.clinical_line, c.unit_code"""
     ),
-    "/api/roles": lambda q: [
-        {
-            **r,
-            "permissions": [
-                p["perm_code"]
-                for p in rows(
-                    """SELECT perm.perm_code FROM role_permission rp
-                       JOIN permission perm ON perm.permission_id=rp.permission_id
-                       WHERE rp.role_id=? ORDER BY perm.perm_code""",
-                    (r["role_id"],),
-                )
-            ],
-        }
-        for r in rows("SELECT * FROM role ORDER BY role_id")
-    ],
+    "/api/roles": lambda q: _roles_with_perms(),
     "/api/vocabulary": lambda q: rows("SELECT * FROM vocabulary ORDER BY domain, code"),
     "/api/audit": lambda q: rows("SELECT * FROM desk_audit ORDER BY unit_code"),
     "/api/events": lambda q: rows("SELECT * FROM registry_event ORDER BY id DESC"),
@@ -361,6 +371,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'none'; object-src 'none'; "
+            "frame-ancestors 'none'; script-src 'self'; connect-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; "
+            "form-action 'self'",
+        )
+        if self._secure():
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         super().end_headers()
 
     def _secure(self) -> bool:
@@ -370,9 +392,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _auth_user(self):
         conn = db()
         try:
-            q = parse_qs(urlparse(self.path).query)
-            override = (q.get("token") or [None])[0]
-            return um.user_from_conn(conn, self.headers, token_override=override)
+            return um.user_from_conn(conn, self.headers)
         finally:
             conn.close()
 
@@ -436,7 +456,8 @@ class Handler(SimpleHTTPRequestHandler):
                     data = Path(path_or_err).read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", rec.get("mime") or "application/octet-stream")
-                    self.send_header("Content-Disposition", f'attachment; filename="{rec["original_name"]}"')
+                    safe_name = re.sub(r'[\r\n"\\]', '_', rec["original_name"])
+                    self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)

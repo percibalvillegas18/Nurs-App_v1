@@ -49,57 +49,7 @@
     <div class="banner" id="banner"></div>
     <div id="app">Loading registry…</div>
   </main>
-  <script>
-    (function () {
-      var KEY = "hnwms_token";
-      var PW = "Demo@2026";
-      var err = document.getElementById("gate-err");
-      function fail(m) { err.textContent = m || "Could not sign in"; }
-      async function enter(username) {
-        err.textContent = "Signing in…";
-        try {
-          var r = await fetch("/api/auth/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username: username, password: PW })
-          });
-          var d = await r.json();
-          if (!d.ok || !d.token) { fail(d.error || ("HTTP " + r.status)); return; }
-          window.__HNWMS_TOKEN = d.token;
-          try {
-            sessionStorage.setItem(KEY, d.token);
-            localStorage.setItem(KEY, d.token);
-          } catch (e) {}
-          document.getElementById("gate").style.display = "none";
-          document.body.classList.remove("guest");
-          location.hash = "profile";
-          if (window.hnwmsBoot) window.hnwmsBoot();
-          else fail("App did not start. Refresh once.");
-        } catch (e) { fail(String(e)); }
-      }
-      document.querySelectorAll(".enter").forEach(function (b) {
-        b.addEventListener("click", function () { enter(b.getAttribute("data-u")); });
-      });
-      document.getElementById("gate-go").addEventListener("click", function () {
-        var u = document.getElementById("gate-user").value;
-        if (u) enter(u);
-      });
-      fetch("/api/auth/accounts").then(function (r) { return r.json(); }).then(function (pack) {
-        var sel = document.getElementById("gate-user");
-        (pack.accounts || []).forEach(function (a) {
-          var o = document.createElement("option");
-          o.value = a.username;
-          o.textContent = a.display_name + " — " + a.job_title;
-          if (a.username === "fatimah.al.harbi") o.selected = true;
-          sel.appendChild(o);
-        });
-      }).catch(function () {});
-      if (sessionStorage.getItem(KEY)) {
-        document.getElementById("gate").style.display = "none";
-        document.body.classList.remove("guest");
-      }
-    })();
-  </script>
+  <script src="/login.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -3,5 +3,7 @@ __pycache__/
 *.pyc
 org-directory/data/*.db
 org-directory/data/*.db-journal
+org-directory/data/*.db-shm
+org-directory/data/*.db-wal
 org-directory/data/uploads/
 .DS_Store

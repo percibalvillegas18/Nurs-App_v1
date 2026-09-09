@@ -75,9 +75,7 @@ def cookie_token(header: str | None) -> str | None:
     return None
 
 
-def request_token(headers, override: str | None = None) -> str | None:
-    if override:
-        return override.strip()
+def request_token(headers) -> str | None:
     auth = (headers.get("Authorization") if hasattr(headers, "get") else None) or ""
     if auth.lower().startswith("bearer "):
         return auth.split(" ", 1)[1].strip()
@@ -87,8 +85,8 @@ def request_token(headers, override: str | None = None) -> str | None:
     return cookie_token(headers.get("Cookie") if hasattr(headers, "get") else None)
 
 
-def user_from_conn(conn, headers, token_override: str | None = None) -> dict | None:
-    token = request_token(headers, token_override)
+def user_from_conn(conn, headers) -> dict | None:
+    token = request_token(headers)
     if not token:
         return None
     now = now_iso()
@@ -141,17 +139,27 @@ def cleanup_sessions(conn):
     conn.commit()
 
 
+_RATE_MAX_KEYS = 10_000
+
+
 def check_rate_limit(client_ip: str) -> bool:
     """Return True if the client is within the login rate limit."""
     import time
     now = time.time()
     with _login_lock:
-        attempts = _login_attempts[client_ip]
-        # Prune old entries
-        _login_attempts[client_ip] = [t for t in attempts if now - t < LOGIN_RATE_WINDOW]
-        if len(_login_attempts[client_ip]) >= LOGIN_RATE_MAX:
+        # Refresh the active IP at the end of the insertion-ordered mapping.
+        attempts = [
+            t for t in _login_attempts.pop(client_ip, [])
+            if now - t < LOGIN_RATE_WINDOW
+        ]
+        # Keep a hard upper bound even during a flood of distinct, active IPs.
+        if len(_login_attempts) >= _RATE_MAX_KEYS:
+            _login_attempts.pop(next(iter(_login_attempts)))
+        if len(attempts) >= LOGIN_RATE_MAX:
+            _login_attempts[client_ip] = attempts
             return False
-        _login_attempts[client_ip].append(now)
+        attempts.append(now)
+        _login_attempts[client_ip] = attempts
         return True
 
 
@@ -233,6 +241,10 @@ PROFILE_FIELDS = [
     "emergency_name",
     "emergency_phone",
 ]
+
+# Guard: every field name must be a safe SQL identifier (lowercase + underscore only)
+assert all(re.fullmatch(r"[a-z_]+", f) for f in PROFILE_FIELDS), \
+    f"PROFILE_FIELDS contains unsafe identifier: {PROFILE_FIELDS}"
 
 
 def _can_see(user: dict, persona_id: int) -> bool:
@@ -361,7 +373,9 @@ def open_document(conn, user: dict, document_id: int):
     d = dict(row)
     if not _can_see(user, d["persona_id"]):
         return None, "not allowed"
-    path = UPLOADS / str(d["persona_id"]) / d["stored_name"]
+    path = (UPLOADS / str(d["persona_id"]) / d["stored_name"]).resolve()
+    if not path.is_relative_to(UPLOADS.resolve()):
+        return None, "invalid path"
     if not path.exists():
         return None, "missing file"
     return d, path
